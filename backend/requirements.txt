@@ -1,0 +1,11 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+pydantic-settings>=2.7,<3
+python-multipart>=0.0.20
+opencv-python-headless>=4.10,<5
+numpy>=2.0,<3
+supervision>=0.25,<0.28
+torch>=2.6,<3
+ultralytics>=8.4,<9
+pytest>=8,<10
+httpx>=0.28,<1

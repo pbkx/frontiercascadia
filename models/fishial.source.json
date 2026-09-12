@@ -1,0 +1,12 @@
+{
+  "project": "https://github.com/fishial/fish-identification",
+  "download": "https://storage.googleapis.com/fishial-ml-resources/detector_v26_n3.zip",
+  "sha256": "5b786b334355fdb0c3faa9d375d70de24f3535ee6f11e9c3e26ec2e90810c03f",
+  "upstream_metadata": {
+    "version": 3,
+    "model": "YOLO26 nano",
+    "input_img_size": 640,
+    "date": "11-02-2025",
+    "author": "Codahead@Andrew"
+  }
+}
