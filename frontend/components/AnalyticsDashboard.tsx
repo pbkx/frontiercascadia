@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Minus, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Download, Minus, X } from "lucide-react";
 import { backendUrl } from "@/lib/api";
 
 type Range = "5m" | "15m" | "1h" | "all" | "full";
@@ -46,19 +46,21 @@ function duration(seconds: number | null, compact = false) {
 
 function number(value: number | null, digits = 1) { return value === null ? "—" : value.toFixed(digits); }
 function Empty({ text }: { text: string }) { return <div className="analytics-empty">{text}</div>; }
+function csvCell(value: string | number | boolean) { return `"${String(value).replaceAll('"', '""')}"`; }
 
 function LineChart({ data, series }: { data: Bucket[]; series: { key: keyof Bucket; label: string; color: string }[] }) {
   if (!data.length || !series.some(item => data.some(bucket => Number(bucket[item.key] || 0) > 0))) return <Empty text="No activity recorded in this period." />;
   const width = 900, height = 280, left = 38, right = 16, top = 18, bottom = 35;
   const max = Math.max(1, ...data.flatMap(bucket => series.map(item => Number(bucket[item.key] || 0))));
+  const ticks = max <= 4 ? Array.from({ length: max + 1 }, (_, index) => index) : [0, Math.ceil(max / 2), max];
   const x = (index: number) => data.length === 1 ? (left + width - right) / 2 : left + index / (data.length - 1) * (width - left - right);
   const y = (value: number) => top + (1 - value / max) * (height - top - bottom);
   const primaryPoints = data.map((bucket, index) => `${x(index)},${y(Number(bucket[series[0].key] || 0))}`).join(" ");
   return <svg className="analytics-chart line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={series.map(item => item.label).join(", ") + " over time"}>
-    {[0, .5, 1].map(portion => <g key={portion}><line x1={left} x2={width - right} y1={y(max * portion)} y2={y(max * portion)} /><text x={left - 9} y={y(max * portion) + 4}>{Math.round(max * portion)}</text></g>)}
+    {ticks.map(value => <g key={value}><line x1={left} x2={width - right} y1={y(value)} y2={y(value)} /><text x={left - 9} y={y(value) + 4}>{value}</text></g>)}
     {series.length && data.length > 1 && <polygon className="chart-area" points={`${x(0)},${y(0)} ${primaryPoints} ${x(data.length - 1)},${y(0)}`} fill={series[0].color} />}
     {series.map(item => <g key={String(item.key)}><polyline points={data.map((bucket, index) => `${x(index)},${y(Number(bucket[item.key] || 0))}`).join(" ")} fill="none" stroke={item.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      {data.map((bucket, index) => <g key={index}><circle className="chart-hit" cx={x(index)} cy={y(Number(bucket[item.key] || 0))} r="8"><title>{`${item.label}: ${bucket[item.key] || 0} · ${duration(bucket.start)}`}</title></circle>{(data.length <= 14 || index === data.length - 1) && <circle className="chart-marker" cx={x(index)} cy={y(Number(bucket[item.key] || 0))} r="2.5" fill={item.color} />}</g>)}</g>)}
+      {data.map((bucket, index) => <g key={index}><circle className="chart-hit" cx={x(index)} cy={y(Number(bucket[item.key] || 0))} r="8"><title>{`${item.label}: ${bucket[item.key] || 0} · ${duration(bucket.start)}`}</title></circle>{index === data.length - 1 && <circle className="chart-marker" cx={x(index)} cy={y(Number(bucket[item.key] || 0))} r="2.5" fill={item.color} />}</g>)}</g>)}
     <text x={left} y={height - 8}>{duration(data[0].start)}</text><text textAnchor="end" x={width - right} y={height - 8}>{duration(data[data.length - 1].end)}</text>
   </svg>;
 }
@@ -81,8 +83,8 @@ function Scatter({ points }: { points: AnalyticsData["scatter"] }) {
   const maxX = Math.max(...points.map(point => point.speed), .01), maxY = Math.max(...points.map(point => point.observed_time), 1);
   return <svg className="analytics-chart scatter-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Relative speed versus time observed by track">
     {[0, .5, 1].map(portion => <g key={portion}><line x1={left} x2={width - right} y1={top + portion * (height - top - bottom)} y2={top + portion * (height - top - bottom)} /><text x={left - 9} y={top + portion * (height - top - bottom) + 4}>{Math.round(maxY * (1 - portion))}</text></g>)}
-    {points.map(point => <circle key={point.id} cx={left + point.speed / maxX * (width - left - right)} cy={top + (1 - point.observed_time / maxY) * (height - top - bottom)} r="5" className={point.reversal ? "reversal-point" : "normal-point"}><title>{`Fish #${point.display_id ?? point.id}: ${point.speed.toFixed(3)} widths/s, ${point.observed_time.toFixed(1)}s observed`}</title></circle>)}
-    <text x={left} y={height - 25}>0</text><text x={width - right} y={height - 25} textAnchor="end">{maxX.toFixed(3)}</text><text x={width / 2} y={height - 8} textAnchor="middle">Relative speed (frame widths / second)</text><text transform={`translate(14 ${height / 2}) rotate(-90)`} textAnchor="middle">Time observed (seconds)</text>
+    {points.map(point => <circle key={point.id} cx={left + point.speed / maxX * (width - left - right)} cy={top + (1 - point.observed_time / maxY) * (height - top - bottom)} r="5" className={point.reversal ? "reversal-point" : "normal-point"}><title>{`Fish #${point.display_id ?? point.id}: relative speed ${point.speed.toFixed(3)}, ${point.observed_time.toFixed(1)}s observed`}</title></circle>)}
+    <text x={left} y={height - 25}>0</text><text x={width - right} y={height - 25} textAnchor="end">{maxX.toFixed(3)}</text><text x={width / 2} y={height - 8} textAnchor="middle">Relative speed</text><text transform={`translate(14 ${height / 2}) rotate(-90)`} textAnchor="middle">Time observed (seconds)</text>
   </svg>;
 }
 
@@ -115,6 +117,22 @@ export default function AnalyticsDashboard({ sessionId, onClose }: { sessionId: 
     return descending ? -comparison : comparison;
   }), [data?.tracks, descending, sort]);
   const changeSort = (key: SortKey) => { if (sort === key) setDescending(value => !value); else { setSort(key); setDescending(true); } };
+  const exportTracks = () => {
+    if (!sortedTracks.length) return;
+    const rows = [
+      ["Track", "Direction", "Observed seconds", "Relative speed", "Distance", "Reversals", "Crossed", "First seen seconds"],
+      ...sortedTracks.map(track => [track.display_id ?? track.id, track.direction, track.observed_time, track.relative_speed, track.distance, track.reversals, track.crossed, track.first_seen]),
+    ];
+    const blob = new Blob([rows.map(row => row.map(csvCell).join(",")).join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `fyolo-tracks-${selectedRange}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
   const ranges: { value: Range; label: string }[] = [{ value: "5m", label: "5 MIN" }, { value: "15m", label: "15 MIN" }, { value: "1h", label: "1 HR" }, { value: data?.source_type === "upload" ? "full" : "all", label: data?.source_type === "upload" ? "FULL VIDEO" : "ALL" }];
 
   const renderView = () => {
@@ -123,12 +141,12 @@ export default function AnalyticsDashboard({ sessionId, onClose }: { sessionId: 
     if (activeView === "direction") return <><div className="workspace-heading"><div><h3>Movement Direction</h3><p>Final direction of each unique tracked fish</p></div></div>{data.summary.fish_tracked ? <div className="direction-bars">{data.direction.map(item => <div key={item.name}><span>{item.name}</span><div><i style={{ width: `${item.percent}%` }} /></div><strong>{item.percent.toFixed(1)}%</strong><small>{item.count} fish</small><title>{`${item.count} tracks (${item.percent.toFixed(1)}%)`}</title></div>)}</div> : <Empty text="No directional tracks in this period." />}</>;
     if (activeView === "events") return <><div className="workspace-heading"><div><h3>Behavior Events</h3><p>When unusual movement occurred</p></div></div><LineChart data={data.behavior_events} series={[{ key: "reversals", label: "Reversals", color: "#ffba72" }, { key: "long_dwell", label: "Long dwell", color: "#ffe0b8" }]} /></>;
     if (activeView === "observed") return <><div className="workspace-heading"><div><h3>Time Observed</h3><p>Distribution of unique track durations</p></div><StatStrip values={[{ label: "Median", value: duration(data.observed_time_stats.median, true) }, { label: "90th percentile", value: duration(data.observed_time_stats.p90, true) }, { label: "Longest", value: duration(data.observed_time_stats.longest, true) }]} /></div><Histogram data={data.observed_time_distribution} empty="Collecting enough track data…" /></>;
-    if (activeView === "speed") return <><div className="workspace-heading"><div><h3>Movement Speed</h3><p>Relative movement · frame widths per second</p></div><StatStrip values={[{ label: "Median · widths/s", value: number(data.speed_stats.median, 3) }, { label: "90th percentile · widths/s", value: number(data.speed_stats.p90, 3) }]} /></div><Histogram data={data.speed_distribution} accent="amber" empty="No usable speed data in this period." /></>;
+    if (activeView === "speed") return <><div className="workspace-heading"><div><h3>Movement Speed</h3><p>Relative movement speed</p></div><StatStrip values={[{ label: "Median", value: number(data.speed_stats.median, 3) }, { label: "90th percentile", value: number(data.speed_stats.p90, 3) }]} /></div><Histogram data={data.speed_distribution} accent="amber" empty="No usable speed data in this period." /></>;
     if (activeView === "comparison") return <><div className="workspace-heading"><div><h3>Normal vs Reversal Tracks</h3><p>Tracks with zero reversals compared with one or more</p></div></div>{!data.normal_vs_reversal.normal.count || !data.normal_vs_reversal.reversal.count ? <Empty text="Both normal and reversal tracks are needed for comparison." /> : <div className="comparison-table" role="table"><div role="row"><span /><strong>Normal <small>{data.normal_vs_reversal.normal.count} tracks</small></strong><strong>Reversal <small>{data.normal_vs_reversal.reversal.count} tracks</small></strong></div>{[
-      ["Median observed", duration(data.normal_vs_reversal.normal.median_observed_time, true), duration(data.normal_vs_reversal.reversal.median_observed_time, true)], ["Median speed (widths/s)", number(data.normal_vs_reversal.normal.median_relative_speed, 3), number(data.normal_vs_reversal.reversal.median_relative_speed, 3)], ["Median distance (widths)", number(data.normal_vs_reversal.normal.median_distance, 3), number(data.normal_vs_reversal.reversal.median_distance, 3)], ["Upstream crossing", data.normal_vs_reversal.normal.upstream_crossing_rate === null ? "—" : `${data.normal_vs_reversal.normal.upstream_crossing_rate}%`, data.normal_vs_reversal.reversal.upstream_crossing_rate === null ? "—" : `${data.normal_vs_reversal.reversal.upstream_crossing_rate}%`],
+      ["Median observed", duration(data.normal_vs_reversal.normal.median_observed_time, true), duration(data.normal_vs_reversal.reversal.median_observed_time, true)], ["Median speed", number(data.normal_vs_reversal.normal.median_relative_speed, 3), number(data.normal_vs_reversal.reversal.median_relative_speed, 3)], ["Median distance", number(data.normal_vs_reversal.normal.median_distance, 3), number(data.normal_vs_reversal.reversal.median_distance, 3)], ["Upstream crossing", data.normal_vs_reversal.normal.upstream_crossing_rate === null ? "—" : `${data.normal_vs_reversal.normal.upstream_crossing_rate}%`, data.normal_vs_reversal.reversal.upstream_crossing_rate === null ? "—" : `${data.normal_vs_reversal.reversal.upstream_crossing_rate}%`],
     ].map(row => <div role="row" key={row[0]}><span>{row[0]}</span><b>{row[1]}</b><b>{row[2]}</b></div>)}</div>}</>;
     if (activeView === "scatter") return <><div className="workspace-heading"><div><h3>Speed vs Time Observed</h3><p>Each point represents one tracked fish</p></div><div className="scatter-legend"><span><i className="normal-point" />Normal</span><span><i className="reversal-point" />Reversal</span></div></div><Scatter points={data.scatter} /></>;
-    return <><div className="workspace-heading"><div><h3>Tracks</h3><p>Unique individuals in the selected observation period</p></div></div>{sortedTracks.length ? <div className="table-scroll"><table><thead><tr>{[["Track", "id"], ["Direction", "direction"], ["Observed", "observed_time"], ["Speed (widths/s)", "relative_speed"], ["Distance (widths)", null], ["Reversals", "reversals"], ["Crossed", null]].map(([label, key]) => <th key={label}>{key ? <button onClick={() => changeSort(key as SortKey)}>{label}{sort === key ? descending ? <ChevronDown size={13} /> : <ChevronUp size={13} /> : null}</button> : label}</th>)}</tr></thead><tbody>{sortedTracks.map(track => <tr key={track.id}><td>#{track.display_id ?? track.id}</td><td><span className={`direction-label ${track.direction}`}>{track.direction === "upstream" ? <ArrowUp size={13} /> : track.direction === "downstream" ? <ArrowDown size={13} /> : <Minus size={13} />}{track.direction}</span></td><td>{duration(track.observed_time, true)}</td><td>{track.relative_speed.toFixed(3)}</td><td>{track.distance.toFixed(3)}</td><td>{track.reversals}</td><td>{track.crossed ? "Yes" : "No"}</td></tr>)}</tbody></table></div> : <Empty text="No tracks were observed in this period." />}</>;
+    return <><div className="workspace-heading"><div><h3>Tracks</h3><p>Unique individuals in the selected observation period</p></div><button className="export-csv" onClick={exportTracks} disabled={!sortedTracks.length}><Download size={13} />Export CSV</button></div>{sortedTracks.length ? <div className="table-scroll"><table><thead><tr>{[["Track", "id"], ["Direction", "direction"], ["Observed", "observed_time"], ["Speed", "relative_speed"], ["Distance", null], ["Reversals", "reversals"], ["Crossed", null]].map(([label, key]) => <th key={label}>{key ? <button onClick={() => changeSort(key as SortKey)}>{label}{sort === key ? descending ? <ChevronDown size={13} /> : <ChevronUp size={13} /> : null}</button> : label}</th>)}</tr></thead><tbody>{sortedTracks.map(track => <tr key={track.id}><td>#{track.display_id ?? track.id}</td><td><span className={`direction-label ${track.direction}`}>{track.direction === "upstream" ? <ArrowUp size={13} /> : track.direction === "downstream" ? <ArrowDown size={13} /> : <Minus size={13} />}{track.direction}</span></td><td>{duration(track.observed_time, true)}</td><td>{track.relative_speed.toFixed(3)}</td><td>{track.distance.toFixed(3)}</td><td>{track.reversals}</td><td>{track.crossed ? "Yes" : "No"}</td></tr>)}</tbody></table></div> : <Empty text="No tracks were observed in this period." />}</>;
   };
 
   return <div className="analytics-backdrop" onPointerDown={event => { if (event.target === event.currentTarget) onClose(); }}>
@@ -138,12 +156,12 @@ export default function AnalyticsDashboard({ sessionId, onClose }: { sessionId: 
         {loading && !data ? <Empty text="Collecting observation data…" /> : error && !data ? <Empty text={error} /> : !data ? <Empty text="Start an observation to view collected behavior data." /> : <>
           {error && <div className="analytics-warning">{error}</div>}
           <section className="summary-grid" aria-label="Analytics summary">{[
-            ["Fish tracked", String(data.summary.fish_tracked)], ["Upstream", data.summary.upstream_percent === null ? "—" : `${data.summary.upstream_percent.toFixed(1)}%`], ["Downstream", data.summary.downstream_percent === null ? "—" : `${data.summary.downstream_percent.toFixed(1)}%`], ["Reversal rate", data.summary.reversal_rate === null ? "—" : `${data.summary.reversal_rate.toFixed(1)}%`], ["Median observed", duration(data.summary.median_observed_time, true)], ["Median speed · widths/s", number(data.summary.median_relative_speed, 3)],
+            ["Fish tracked", String(data.summary.fish_tracked)], ["Upstream", data.summary.upstream_percent === null ? "—" : `${data.summary.upstream_percent.toFixed(1)}%`], ["Downstream", data.summary.downstream_percent === null ? "—" : `${data.summary.downstream_percent.toFixed(1)}%`], ["Reversal rate", data.summary.reversal_rate === null ? "—" : `${data.summary.reversal_rate.toFixed(1)}%`], ["Median observed", duration(data.summary.median_observed_time, true)], ["Median speed", number(data.summary.median_relative_speed, 3)],
           ].map(([label, value]) => <div className="summary-card" key={label}><span>{label}</span><strong>{value}</strong></div>)}</section>
           <nav className="analytics-view-switch" aria-label="Analytics views">{VIEWS.map(item => <button key={item.key} aria-pressed={activeView === item.key} className={activeView === item.key ? "active" : ""} onClick={() => setActiveView(item.key)}>{item.label}</button>)}</nav>
           <div className="analytics-dashboard-grid">
-            <section className="analytics-workspace" aria-live="polite">{renderView()}</section>
-            <aside className="findings-card"><div><span>Summary</span><h3>Key Findings</h3></div>{data.findings.length ? <ol>{data.findings.map((finding, index) => <li key={finding}><span>{String(index + 1).padStart(2, "0")}</span><p>{finding}</p></li>)}</ol> : <Empty text="Collecting enough track data for supported findings…" />}</aside>
+            <section className={`analytics-workspace${activeView === "tracks" ? " tracks-workspace" : ""}`} aria-live="polite">{renderView()}</section>
+            <aside className="findings-card"><h3>Key findings</h3>{data.findings.length ? <ul>{data.findings.map(finding => <li key={finding}>{finding}</li>)}</ul> : <Empty text="Collecting enough track data for supported findings…" />}</aside>
           </div>
         </>}
       </div>

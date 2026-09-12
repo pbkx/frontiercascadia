@@ -78,11 +78,31 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
   const analyticsButton = page.getByRole('button', { name: 'Analytics', exact: true });
   const sourceButton = page.getByRole('button', { name: 'Change source', exact: true });
   expect((await analyticsButton.boundingBox())!.x).toBeLessThan((await sourceButton.boundingBox())!.x);
+  await page.route('**/api/sessions/*/analytics?range=*', route => route.fulfill({ json: {
+    session_id: 'csv-session', source_type: 'upload', source_name: 'local-video-fixture.avi', range: 'all',
+    observation: { start: 0, end: 12, seconds: 12, bucket_seconds: 30 },
+    summary: { fish_tracked: 1, upstream_percent: 100, downstream_percent: 0, reversal_rate: 0, median_observed_time: 8.2, median_relative_speed: .19 },
+    findings: ['100% of directional tracks moved upstream.'],
+    activity: [{ start: 0, end: 12, fish_observed: 1, upstream_crossings: 1, downstream_crossings: 0 }],
+    behavior_events: [{ start: 0, end: 12, reversals: 0, long_dwell: 0 }],
+    direction: [{ name: 'upstream', count: 1, percent: 100 }, { name: 'downstream', count: 0, percent: 0 }, { name: 'uncertain', count: 0, percent: 0 }],
+    observed_time_distribution: [{ label: '5–10 sec', min: 5, max: 10, count: 1 }],
+    observed_time_stats: { median: 8.2, p90: 8.2, longest: 8.2 },
+    speed_distribution: [{ label: '0.15–0.20', min: .15, max: .2, count: 1 }],
+    speed_stats: { median: .19, p90: .19 },
+    normal_vs_reversal: {
+      normal: { count: 1, median_observed_time: 8.2, median_relative_speed: .19, median_distance: .74, upstream_crossing_rate: 100 },
+      reversal: { count: 0, median_observed_time: null, median_relative_speed: null, median_distance: null, upstream_crossing_rate: null },
+    },
+    scatter: [{ id: 184, display_id: 1, speed: .19, observed_time: 8.2, reversal: false }],
+    tracks: [{ id: 184, display_id: 1, direction: 'upstream', observed_time: 8.2, relative_speed: .19, distance: .74, reversals: 0, crossed: true, first_seen: 3.8 }],
+  } }));
   await analyticsButton.click();
   await expect(page.getByRole('dialog', { name: 'Analytics' })).toBeVisible();
   await expect(page.locator('.video-layer')).toBeVisible();
   await expect(page.getByRole('region', { name: 'Analytics summary' })).toBeVisible();
-  await expect(page.getByText('Median speed · widths/s', { exact: true })).toBeVisible();
+  await expect(page.getByText('Median speed', { exact: true })).toBeVisible();
+  await expect(page.getByText(/widths\/s|frame widths \/ second/)).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Activity', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)');
   await page.getByRole('button', { name: '5 MIN', exact: true }).click();
   await expect(page.getByRole('button', { name: '5 MIN', exact: true })).toHaveClass(/active/);
@@ -92,6 +112,18 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
   await expect(page.getByRole('button', { name: 'Behavior events', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)');
   await expect(page.getByRole('heading', { name: 'Behavior Events', level: 3 })).toBeVisible();
   await expect(page.getByText(/NaN|undefined|Infinity/)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Tracks', exact: true }).click();
+  const exportButton = page.getByRole('button', { name: 'Export CSV' });
+  await expect(exportButton).toBeEnabled();
+  const [download] = await Promise.all([page.waitForEvent('download'), exportButton.click()]);
+  expect(download.suggestedFilename()).toBe('fyolo-tracks-5m.csv');
+  const csv = await (await download.createReadStream()).toArray();
+  const csvText = Buffer.concat(csv).toString('utf8');
+  expect(csvText).toContain('"Track","Direction","Observed seconds","Relative speed","Distance","Reversals","Crossed","First seen seconds"');
+  expect(csvText).toContain('"1","upstream","8.2","0.19","0.74","0","true","3.8"');
+  const workspaceBox = await page.locator('.tracks-workspace').boundingBox();
+  const tableBox = await page.locator('.table-scroll').boundingBox();
+  expect(Math.abs(workspaceBox!.y + workspaceBox!.height - tableBox!.y - tableBox!.height)).toBeLessThan(2);
   await page.getByRole('button', { name: 'Close analytics' }).click();
   await expect(page.getByRole('dialog', { name: 'Analytics' })).toHaveCount(0);
   expect(errors).toEqual([]);
