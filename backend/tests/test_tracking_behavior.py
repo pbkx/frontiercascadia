@@ -204,6 +204,10 @@ def test_archive_and_events_are_bounded_but_lifetime_counts_survive():
     assert len(snapshot['tracks']) == 3
     assert len(snapshot['events']) == 100
     assert all(not track['active'] and track['status'] == 'INCOMPLETE' for track in snapshot['tracks'])
+    analytics = engine.analytics_snapshot()
+    assert len(analytics['tracks']) == 60
+    assert len(analytics['events']) == 120
+    assert all('trajectory' not in track and 'bbox' not in track for track in analytics['tracks'])
 
 
 def test_empty_engine_reports_unknown_rates_without_fabricated_statistics():

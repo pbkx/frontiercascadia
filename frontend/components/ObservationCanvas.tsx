@@ -31,6 +31,21 @@ function visible(track: Track, filter: TrackFilter, selected: number | null) {
     (filter === "Selected" && track.id === selected);
 }
 
+export function isTrackActive(track: Track, timestamp: number) {
+  return track.active ?? timestamp - track.last_seen < 1.5;
+}
+
+export function isTrackSelectable(
+  track: Track,
+  mode: ViewMode,
+  filter: TrackFilter,
+  selected: number | null,
+  timestamp: number,
+) {
+  if (!isTrackActive(track, timestamp)) return false;
+  return mode === "live" || visible(track, filter, selected);
+}
+
 export default function ObservationCanvas(props: Props) {
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const heatRef = useRef<HTMLCanvasElement>(null);
@@ -125,8 +140,8 @@ export default function ObservationCanvas(props: Props) {
       }
 
       for (const track of p.tracks) {
-        const active = track.active ?? ((packet?.timestamp || 0) - track.last_seen < 1.5);
-        if (p.mode === "live" && !active && track.id !== p.selected) continue;
+        const active = isTrackActive(track, packet?.timestamp || 0);
+        if (p.mode === "live" && !active) continue;
         const matches = p.mode === "live" || visible(track, p.filter, p.selected);
         const selected = track.id === p.selected;
         const alpha = matches ? (p.selected !== null && !selected ? .28 : 1) : .06;
@@ -161,7 +176,7 @@ export default function ObservationCanvas(props: Props) {
           ctx.font = `600 11px ${APPLE_FONT}`;
           ctx.textAlign = "left";
           ctx.fillStyle = "white";
-          ctx.fillText(`Fish #${track.id}`, x1 + 7, labelY + 16);
+          ctx.fillText(`Fish #${track.display_id ?? track.id}`, x1 + 7, labelY + 16);
           ctx.textAlign = "right";
           ctx.fillStyle = color;
           ctx.fillText(track.confidence.toFixed(2), x1 + 135, labelY + 16);
@@ -228,7 +243,12 @@ export default function ObservationCanvas(props: Props) {
           }
           return;
         }
-        const track = [...props.tracks].reverse().find(item => position[0] >= item.bbox[0] && position[0] <= item.bbox[2] && position[1] >= item.bbox[1] && position[1] <= item.bbox[3]);
+        const timestamp = props.packet?.timestamp || 0;
+        const track = [...props.tracks].reverse().find(item =>
+          isTrackSelectable(item, props.mode, props.filter, props.selected, timestamp) &&
+          position[0] >= item.bbox[0] && position[0] <= item.bbox[2] &&
+          position[1] >= item.bbox[1] && position[1] <= item.bbox[3]
+        );
         props.onSelect(track?.id ?? null);
       }}
       onPointerMove={event => {

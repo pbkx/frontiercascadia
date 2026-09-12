@@ -63,6 +63,10 @@ class BehaviorEngine:
         self.attempt_states: dict[int, AttemptState] = {}
         self.heatmaps = Heatmaps()
         self.events = deque(maxlen=100)
+        # The live overlay keeps a small detailed archive. Analytics retains a
+        # much larger compact history without trajectories or image data.
+        self.analytics_tracks = deque(maxlen=10000)
+        self.analytics_events = deque(maxlen=20000)
         self._event_id = 0
         self.started_at: float | None = None
         self.timestamp = 0.0
@@ -76,10 +80,25 @@ class BehaviorEngine:
 
     def _event(self, kind, track, message, position=None):
         self._event_id += 1
-        self.events.append({
-            'id': self._event_id, 'type': kind, 'track_id': track.id, 'timestamp': self.timestamp,
+        event = {
+            'id': self._event_id, 'type': kind, 'track_id': track.id,
+            'display_track_id': track.display_id if track.display_id is not None else track.id,
+            'timestamp': self.timestamp,
             'position': list(position if position is not None else track.point), 'message': message,
-        })
+        }
+        self.events.append(event)
+        self.analytics_events.append(event)
+
+    @staticmethod
+    def _analytics_track(track, active=False):
+        record = track.serialize(active)
+        return {
+            key: record[key] for key in (
+                'id', 'display_id', 'first_seen', 'last_seen', 'direction', 'velocity',
+                'distance_traveled', 'time_observed', 'reversals',
+                'gate_crossings', 'flags', 'active',
+            )
+        }
 
     @property
     def baseline(self):
@@ -89,8 +108,11 @@ class BehaviorEngine:
     def long_dwell_limit(self):
         return min(self.dwell_threshold, max(2.0, self.baseline * 2)) if self.baseline is not None else self.dwell_threshold
 
-    def _new_track(self, track_id, bbox, confidence):
-        track = Track(track_id, list(bbox), float(confidence), self.timestamp, self.timestamp, self.history_length)
+    def _new_track(self, track_id, bbox, confidence, display_id=None):
+        track = Track(
+            track_id, list(bbox), float(confidence), self.timestamp, self.timestamp,
+            self.history_length, display_id=int(display_id if display_id is not None else track_id),
+        )
         track.entered = self.passage_calibrated and in_zone(track.point, self.entry_zone)
         self.tracks[track_id] = track
         self.crossing_states[track_id] = CrossingState()
@@ -99,7 +121,7 @@ class BehaviorEngine:
         approach = self.gate.approach_distance(track.point)
         self.attempt_states[track_id] = AttemptState(approach, approach, approach)
         self.counts['tracks_produced'] += 1
-        self._event('TRACK_STARTED', track, f'Fish #{track.id} acquired')
+        self._event('TRACK_STARTED', track, f'Fish #{track.display_id} acquired')
         return track
 
     def _attempt(self, track):
@@ -108,7 +130,7 @@ class BehaviorEngine:
         if track.attempts > 1:
             track.flags.add('MULTIPLE_ATTEMPTS')
             self.heatmaps.attempt(track.point)
-        self._event('PASSAGE_ATTEMPT', track, f'Fish #{track.id} approaching passage · attempt {track.attempts}')
+        self._event('PASSAGE_ATTEMPT', track, f'Fish #{track.display_id} approaching passage · attempt {track.attempts}')
 
     def _success(self, track):
         if track.passage_seconds is not None:
@@ -119,12 +141,13 @@ class BehaviorEngine:
         self.passage_times.append(track.passage_seconds)
         if not track.reversals and 'LONG_DWELL' not in track.flags:
             self.successful_dwell.append(track.dwell_time)
-        self._event('PASSAGE_SUCCESS', track, f'Fish #{track.id} completed observed passage')
+        self._event('PASSAGE_SUCCESS', track, f'Fish #{track.display_id} completed observed passage')
 
     def _archive(self, track_id):
         track = self.tracks.pop(track_id)
         if track.status == 'ACTIVE':
             track.status = 'INCOMPLETE'
+        self.analytics_tracks.append(self._analytics_track(track))
         self.archived[track_id] = track
         while len(self.archived) > self.max_archived:
             self.archived.popitem(last=False)
@@ -132,7 +155,7 @@ class BehaviorEngine:
         self.reversal_states.pop(track_id, None)
         self.attempt_states.pop(track_id, None)
         self.completed_count += 1
-        self._event('TRACK_ENDED', track, f'Fish #{track.id} left observation · {track.status.lower()}')
+        self._event('TRACK_ENDED', track, f'Fish #{track.display_id} left observation · {track.status.lower()}')
 
     def update(self, tracked, timestamp: float):
         if not math.isfinite(timestamp):
@@ -149,12 +172,13 @@ class BehaviorEngine:
             track_id = int(observation['id'] if isinstance(observation, dict) else observation.id)
             bbox = observation['bbox'] if isinstance(observation, dict) else observation.bbox
             confidence = observation['confidence'] if isinstance(observation, dict) else observation.confidence
+            display_id = observation.get('display_id', track_id) if isinstance(observation, dict) else getattr(observation, 'display_id', track_id)
             if len(bbox) != 4 or not all(math.isfinite(value) for value in [*bbox, confidence]):
                 continue
             if track_id not in self.tracks:
                 # ByteTrack IDs are unique per session; a resumed ID after expiry
                 # starts a fresh observation rather than bridging an unseen path.
-                self._new_track(track_id, bbox, confidence)
+                self._new_track(track_id, bbox, confidence, display_id)
                 continue
             track = self.tracks[track_id]
             previous, elapsed = track.move(bbox, confidence, timestamp, self.upstream)
@@ -173,7 +197,7 @@ class BehaviorEngine:
             if track.dwell_time >= self.long_dwell_limit and 'LONG_DWELL' not in track.flags:
                 track.flags.add('LONG_DWELL')
                 self.counts['long_dwell'] += 1
-                self._event('LONG_DWELL', track, f'Elevated dwell time · fish #{track.id}')
+                self._event('LONG_DWELL', track, f'Elevated dwell time · fish #{track.display_id}')
             reversal = self.reversal_states[track_id].update(track.point, track.velocity, confidence, timestamp, self.reversal_threshold)
             if reversal is not None:
                 track.reversals += 1
@@ -183,7 +207,7 @@ class BehaviorEngine:
                     track.status = 'REVERSED'
                 self.counts['reversals'] += 1
                 self.heatmaps.reversal(reversal)
-                self._event('REVERSAL', track, f'Reversal detected · fish #{track.id}', reversal)
+                self._event('REVERSAL', track, f'Reversal detected · fish #{track.display_id}', reversal)
             attempt_state = self.attempt_states[track_id]
             if attempt_state.update(track.point, track.direction, self.gate):
                 self._attempt(track)
@@ -191,7 +215,7 @@ class BehaviorEngine:
             if crossing:
                 track.gate_crossings.append(crossing)
                 self.counts[crossing['direction']] += 1
-                self._event(f"{crossing['direction'].upper()}_CROSSING", track, f"Fish #{track.id} crossed {crossing['direction']}", crossing['position'])
+                self._event(f"{crossing['direction'].upper()}_CROSSING", track, f"Fish #{track.display_id} crossed {crossing['direction']}", crossing['position'])
                 if crossing['direction'] == 'upstream':
                     if attempt_state.crossing_attempt():
                         self._attempt(track)
@@ -243,4 +267,11 @@ class BehaviorEngine:
             'tracks': [track.serialize(False) for track in self.archived.values()] + [track.serialize(True) for track in self.tracks.values()],
             'summary': summary, 'events': list(self.events),
             'heatmaps': self.heatmaps.snapshot(self.baseline, self.long_dwell_limit),
+        }
+
+    def analytics_snapshot(self):
+        """Compact complete history for aggregation, including active tracks."""
+        return {
+            'tracks': list(self.analytics_tracks) + [self._analytics_track(track, True) for track in self.tracks.values()],
+            'events': list(self.analytics_events),
         }

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SalmonSight — Live fish tracking",
+  title: "Fyolo — Live fish tracking",
   description: "Local fish detection, persistent tracks, trajectories, crossings, and behavior overlays on live or uploaded video.",
 };
 

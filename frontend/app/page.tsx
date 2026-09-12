@@ -5,7 +5,8 @@ import {
   Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Crosshair,
   LoaderCircle, Pause, Play, Radio, Settings2, Upload, WifiOff, X,
 } from "lucide-react";
-import ObservationCanvas from "@/components/ObservationCanvas";
+import ObservationCanvas, { isTrackActive } from "@/components/ObservationCanvas";
+import AnalyticsDashboard from "@/components/AnalyticsDashboard";
 import { api, backendUrl, formatTime } from "@/lib/api";
 import {
   DEFAULT_GATE, EMPTY_SUMMARY, type Gate, type Point, type Snapshot,
@@ -28,7 +29,7 @@ function defaultZones(direction: Point) {
   return { entry: [0, .82, 1, 1], exit: [0, 0, 1, .18] };
 }
 
-export default function SalmonSight() {
+export default function Fyolo() {
   const [packet, setPacket] = useState<Snapshot | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [connecting, setConnecting] = useState(true);
@@ -38,6 +39,7 @@ export default function SalmonSight() {
   const [filter, setFilter] = useState<TrackFilter>("All");
   const [heatmap, setHeatmap] = useState<"density" | "friction">("density");
   const [selected, setSelected] = useState<number | null>(null);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [sourceOpen, setSourceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
@@ -74,6 +76,7 @@ export default function SalmonSight() {
       }
     }
     currentSession.current = next.session.id;
+    window.localStorage.setItem("salmonsight-session", next.session.id);
     lastTimestamp.current = next.timestamp;
     for (const track of next.tracks || []) {
       const previous = histories.current.get(track.id);
@@ -95,6 +98,12 @@ export default function SalmonSight() {
   useEffect(() => {
     if (!scrubbing && session?.seekable) setSeekValue(session.playback_position);
   }, [scrubbing, session?.playback_position, session?.seekable]);
+
+  useEffect(() => {
+    if (mode !== "live" || selected === null) return;
+    const track = tracks.find(item => item.id === selected);
+    if (!track || !isTrackActive(track, packet?.timestamp || 0)) setSelected(null);
+  }, [mode, packet?.timestamp, selected, tracks]);
 
   const createDefault = useCallback(async () => {
     if (defaultConnectInFlight.current) return false;
@@ -125,8 +134,16 @@ export default function SalmonSight() {
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
-    void createDefault();
-  }, [createDefault]);
+    const query = new URLSearchParams(window.location.search);
+    const requested = query.get("session");
+    setAnalyticsOpen(query.get("analytics") === "1");
+    if (!requested) { void createDefault(); return; }
+    setConnecting(true);
+    api<Snapshot>(`/api/sessions/${requested}`)
+      .then(acceptPacket)
+      .catch(() => void createDefault())
+      .finally(() => setConnecting(false));
+  }, [acceptPacket, createDefault]);
 
   useEffect(() => {
     const closeSession = () => {
@@ -291,6 +308,10 @@ export default function SalmonSight() {
     ? isActivelyLive ? "LIVE" : session.reconnecting ? "RECONNECTING" : "OFFLINE"
     : null;
   const hasPlayback = Boolean(session?.seekable && session.duration && !session.calibration_required);
+  const changeMode = (nextMode: ViewMode) => {
+    setSelected(null);
+    setMode(nextMode);
+  };
 
   return <main className={`app mode-${mode}${hasPlayback ? " has-playback" : ""}`}>
     <div className="video-stage">
@@ -339,9 +360,9 @@ export default function SalmonSight() {
 
     {session?.passage_calibrated && <div className="rate-note glass">Passage rate: {summary.passage_rate === null ? "Collecting data…" : `${Math.round(summary.passage_rate)} fish/hour`}</div>}
 
-    {selectedTrack && <aside className="track-panel glass" aria-label={`Fish ${selectedTrack.id} details`}>
+    {selectedTrack && <aside className="track-panel glass" aria-label={`Fish ${selectedTrack.display_id ?? selectedTrack.id} details`}>
       <button aria-label="Close fish details" onClick={() => setSelected(null)}><X size={14} /></button>
-      <strong>Fish #{selectedTrack.id}</strong><span>{selectedTrack.confidence.toFixed(2)}</span>
+      <strong>Fish #{selectedTrack.display_id ?? selectedTrack.id}</strong><span>{selectedTrack.confidence.toFixed(2)}</span>
       <dl><div><dt>Direction</dt><dd>{selectedTrack.direction}</dd></div><div><dt>Dwell time</dt><dd>{selectedTrack.dwell_time.toFixed(1)}s</dd></div><div><dt>Reversals</dt><dd>{selectedTrack.reversals}</dd></div><div><dt>Observed</dt><dd>{selectedTrack.time_observed.toFixed(1)}s</dd></div></dl>
     </aside>}
 
@@ -363,8 +384,9 @@ export default function SalmonSight() {
         {session?.running ? "Pause" : "Analyze"}
       </button>
       <nav className="view-switch glass" aria-label="Main modes">
-        {(["live", "trajectories", "behavior"] as ViewMode[]).map(value => <button key={value} className={mode === value ? "active" : ""} aria-pressed={mode === value} onClick={() => setMode(value)}>{value}</button>)}
+        {(["live", "trajectories", "behavior"] as ViewMode[]).map(value => <button key={value} className={mode === value ? "active" : ""} aria-pressed={mode === value} onClick={() => changeMode(value)}>{value}</button>)}
       </nav>
+      <button className="analytics-button glass" onClick={() => setAnalyticsOpen(true)}>Analytics</button>
       <button className="change-source glass" onClick={() => setSourceOpen(true)}>Change source</button>
       <button className="settings-button glass" aria-label="Open calibration settings" onClick={() => { setSettingsOpen(true); setCalibrating(true); }}><Settings2 size={15} /></button>
     </div>
@@ -394,6 +416,8 @@ export default function SalmonSight() {
         <button className="upload-button" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={15} /> Upload MP4 / MOV / AVI</button>
       </section>
     </div>}
+
+    {analyticsOpen && <AnalyticsDashboard sessionId={session?.id || currentSession.current} onClose={() => setAnalyticsOpen(false)} />}
 
     <input ref={fileInput} className="file-input" type="file" accept="video/mp4,video/quicktime,video/x-msvideo,.mp4,.mov,.avi" onChange={event => { const file = event.target.files?.[0]; if (file) void upload(file); }} />
   </main>;

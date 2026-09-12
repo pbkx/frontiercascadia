@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from .config import ROOT, settings
+from .analytics import build_analytics
 from .models.schemas import SessionCreate, URLSource, PlaybackSeek, Calibration, Snapshot, TrackRecord, PassageEvent, PassageSummary
 from .services.sessions import Session, sessions
 from .video.sources import discover_demo, resolve_stream
@@ -40,7 +41,7 @@ async def lifespan(app: FastAPI):
         sessions.clear()
 
 
-app = FastAPI(title='SalmonSight', version='1.0.0', lifespan=lifespan)
+app = FastAPI(title='Fyolo', version='1.0.0', lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:3000', 'http://127.0.0.1:3000'], allow_methods=['GET', 'POST', 'DELETE'], allow_headers=['*'])
 
 
@@ -214,6 +215,21 @@ async def tracks(session_id: str):
 @app.get('/api/sessions/{session_id}/events', response_model=list[PassageEvent])
 async def events(session_id: str):
     return get_session(session_id).snapshot()['events']
+
+
+@app.get('/api/sessions/{session_id}/analytics')
+async def analytics(session_id: str, range: str = 'all'):
+    session = get_session(session_id)
+    with session.processor.analytics_lock:
+        history = session.processor.engine.analytics_snapshot()
+        snapshot = {
+            'session': {'id': session.id, 'source_type': session.source_type, 'source_name': session.display_name},
+            'timestamp': session.processor.timestamp, **history,
+        }
+    try:
+        return build_analytics(snapshot, range)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
 
 
 @app.delete('/api/sessions/{session_id}')

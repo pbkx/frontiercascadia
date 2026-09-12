@@ -121,6 +121,7 @@ class Crossing(BaseModel):
 
 class TrackRecord(BaseModel):
     id: int
+    display_id: int
     bbox: tuple[float, float, float, float]
     centroid: Point
     confidence: float
@@ -162,6 +163,7 @@ class PassageEvent(BaseModel):
     id: int
     type: Literal['TRACK_STARTED', 'TRACK_ENDED', 'UPSTREAM_CROSSING', 'DOWNSTREAM_CROSSING', 'PASSAGE_ATTEMPT', 'PASSAGE_SUCCESS', 'REVERSAL', 'LONG_DWELL', 'CONGESTION']
     track_id: int
+    display_track_id: int
     timestamp: float
     position: Point
     message: str

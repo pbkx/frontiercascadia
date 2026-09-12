@@ -25,6 +25,9 @@ class Track:
     first_seen: float
     last_seen: float
     history_length: int
+    # `id` remains the collision-safe tracker key. `display_id` is the compact,
+    # session-scoped number shown to people and never participates in matching.
+    display_id: int | None = None
     point: tuple[float, float] = field(init=False)
     history: deque = field(init=False)
     motion: deque = field(default_factory=lambda: deque(maxlen=30))
@@ -77,7 +80,8 @@ class Track:
 
     def serialize(self, active):
         return {
-            'id': self.id, 'bbox': self.bbox, 'centroid': list(self.point),
+            'id': self.id, 'display_id': self.display_id if self.display_id is not None else self.id,
+            'bbox': self.bbox, 'centroid': list(self.point),
             'confidence': self.confidence, 'first_seen': self.first_seen, 'last_seen': self.last_seen,
             'trajectory': list(self.history), 'smoothed_velocity': list(self.velocity),
             'velocity': math.hypot(*self.velocity), 'direction': self.direction,

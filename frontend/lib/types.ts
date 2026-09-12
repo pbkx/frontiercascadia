@@ -4,6 +4,7 @@ export type ViewMode = "live" | "trajectories" | "behavior";
 export type TrackFilter = "All" | "Upstream" | "Downstream" | "Reversals" | "Long dwell" | "Selected";
 export interface Track {
   id: number;
+  display_id?: number;
   bbox: [number, number, number, number];
   centroid: Point;
   confidence: number;
@@ -68,6 +69,7 @@ export interface PassageEvent {
   id: number | string;
   type: string;
   track_id: number;
+  display_track_id?: number;
   timestamp: number;
   position: Point;
   message: string;

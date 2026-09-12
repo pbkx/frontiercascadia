@@ -40,6 +40,10 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
   await expect(page.getByRole('button', { name: 'Issaquah SalmonCam' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Upload MP4 / MOV / AVI' })).toBeVisible();
   await expect(page.getByText('MP4, MOV, and supported AVI files run through the same local detector and tracker.')).toHaveCount(0);
+  const connectButton = page.getByRole('button', { name: 'Connect', exact: true });
+  await expect(connectButton).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.94)');
+  await expect(connectButton).toHaveCSS('color', 'rgb(5, 5, 5)');
+  expect((await connectButton.boundingBox())!.width).toBeCloseTo((await page.getByLabel('YouTube URL').boundingBox())!.width, 0);
   await page.locator('input[type=file]').setInputFiles(fixture);
   await expect(page.getByRole('complementary', { name: 'Calibration settings' })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('local-video-fixture.avi', { exact: true })).toBeVisible();
@@ -71,6 +75,25 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
   await page.getByRole('button', { name: 'behavior', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Movement density' })).toBeVisible();
   await page.getByRole('button', { name: 'Dwell hotspot' }).click();
+  const analyticsButton = page.getByRole('button', { name: 'Analytics', exact: true });
+  const sourceButton = page.getByRole('button', { name: 'Change source', exact: true });
+  expect((await analyticsButton.boundingBox())!.x).toBeLessThan((await sourceButton.boundingBox())!.x);
+  await analyticsButton.click();
+  await expect(page.getByRole('dialog', { name: 'Analytics' })).toBeVisible();
+  await expect(page.locator('.video-layer')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Analytics summary' })).toBeVisible();
+  await expect(page.getByText('Median speed · widths/s', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Activity', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)');
+  await page.getByRole('button', { name: '5 MIN', exact: true }).click();
+  await expect(page.getByRole('button', { name: '5 MIN', exact: true })).toHaveClass(/active/);
+  await expect(page.getByRole('button', { name: '5 MIN', exact: true })).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.14)');
+  await expect(page.getByRole('button', { name: '5 MIN', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)');
+  await page.getByRole('button', { name: 'Behavior events', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Behavior events', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)');
+  await expect(page.getByRole('heading', { name: 'Behavior Events', level: 3 })).toBeVisible();
+  await expect(page.getByText(/NaN|undefined|Infinity/)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close analytics' }).click();
+  await expect(page.getByRole('dialog', { name: 'Analytics' })).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -82,4 +105,83 @@ test('source controls and overlays remain usable on a narrow viewport', async ({
   await page.getByRole('button', { name: 'Open calibration settings' }).click();
   await expect(page.getByRole('complementary', { name: 'Calibration settings' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Close calibration settings' }).click();
+  await page.getByRole('button', { name: 'Analytics', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Analytics' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Close analytics' }).click();
+});
+
+test('selection follows the visible tracks and clears when changing modes', async ({ page }) => {
+  const track = (id: number, displayId: number, bbox: [number, number, number, number], active: boolean) => ({
+    id, display_id: displayId, bbox, centroid: [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2],
+    confidence: .91, trajectory: [[bbox[0], bbox[1], 9]], smoothed_velocity: [.02, 0],
+    velocity: .02, direction: 'upstream', time_observed: 3, reversals: 0,
+    reversal_locations: [], dwell_time: .2, attempts: 0, status: 'ACTIVE', flags: [],
+    last_seen: active ? 10 : 2, active,
+  });
+  const snapshot = {
+    session: {
+      id: 'selection-session', mode: 'VISUALIZATION_DEMO', label: 'SIMULATED DATA',
+      source_name: 'Selection fixture', source_origin: 'Selection fixture', running: false,
+      completed: false, error: null, detector_state: 'ILLUSTRATIVE', video_url: null,
+      width: 1440, height: 900, source_type: 'simulated', passage_calibrated: false,
+      reconnecting: false, reconnect_attempts: 0, display_fps: 10, stream_active: false,
+      seekable: false, playback_paused: false, playback_position: 0, analysis_generation: 0,
+      calibration_required: false,
+      calibration: { upstream: [1, 0], gate: [[.65, .26], [.65, .74]] },
+    },
+    frame: 100, timestamp: 10, processing_fps: 8.4,
+    tracks: [track(10_000_794, 1, [.10, .10, .20, .20], true), track(10_000_795, 2, [.70, .10, .80, .20], false)],
+    summary: {
+      upstream: 0, downstream: 0, active: 1, passage_rate: null, successful: 0,
+      attempts: 0, reversals: 0, long_dwell: 0, success_rate: null,
+      median_passage_seconds: null, elapsed_seconds: 10, tracks_produced: 2,
+    },
+    events: [],
+    heatmaps: {
+      density: [[0]], friction: [[0]], columns: 1, rows: 1, hotspot: null,
+    },
+    simulation_fish: [],
+  };
+
+  await page.route('**/api/sessions', async route => {
+    await route.fulfill({ json: snapshot });
+  });
+  await page.routeWebSocket('**/ws/sessions/**', () => undefined);
+  await page.goto('/');
+
+  const overlay = page.locator('.cv-canvas');
+  await expect(overlay).toBeVisible();
+  const clickNormalized = async (x: number, y: number) => {
+    const bounds = await overlay.boundingBox();
+    if (!bounds) throw new Error('Tracking canvas has no bounds');
+    await overlay.click({ position: { x: bounds.width * x, y: bounds.height * y } });
+  };
+
+  await clickNormalized(.15, .15);
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toBeVisible();
+  await page.getByRole('button', { name: 'trajectories', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toHaveCount(0);
+
+  await clickNormalized(.15, .15);
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toBeVisible();
+  await page.getByRole('button', { name: 'trajectories', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toHaveCount(0);
+
+  await clickNormalized(.15, .15);
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toBeVisible();
+  await page.getByRole('button', { name: 'behavior', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toHaveCount(0);
+
+  await clickNormalized(.75, .15);
+  await expect(page.locator('.track-panel')).toHaveCount(0);
+  await page.getByRole('button', { name: 'live', exact: true }).click();
+  await clickNormalized(.75, .15);
+  await expect(page.locator('.track-panel')).toHaveCount(0);
+
+  await clickNormalized(.15, .15);
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toBeVisible();
+  await clickNormalized(.5, .5);
+  await expect(page.locator('.track-panel')).toHaveCount(0);
 });

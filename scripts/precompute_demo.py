@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cache real, raw LOCAL fish detections for a fully offline SalmonSight stage demo."""
+"""Cache real, raw LOCAL fish detections for a fully offline Fyolo stage demo."""
 import argparse
 import json
 import os

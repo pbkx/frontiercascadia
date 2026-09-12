@@ -1,6 +1,6 @@
-# SalmonSight
+# Fyolo
 
-SalmonSight is a video-first local fish tracking app. It uses the pretrained Fishial general-fish detector, ByteTrack IDs, trajectory history, crossings, reversals, dwell analysis, and Canvas overlays. It does not classify salmon species.
+Fyolo is a video-first local fish tracking app. It uses the pretrained Fishial general-fish detector, ByteTrack IDs, trajectory history, crossings, reversals, dwell analysis, and Canvas overlays. It does not classify salmon species.
 
 The normal app opens directly to the Issaquah SalmonCam YouTube live stream:
 

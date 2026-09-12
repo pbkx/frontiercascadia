@@ -73,6 +73,8 @@ class VideoProcessor:
         self.analysis_generation = 0
         self._last_analysis_media_timestamp = None
         self._track_id_namespace = 0
+        self._display_track_ids: dict[int, int] = {}
+        self._next_display_track_id = 1
         self._display_times = deque(maxlen=61)
         self._detection_times = deque(maxlen=31)
         self.analysis_fps = 0.
@@ -194,6 +196,22 @@ class VideoProcessor:
             self._last_analysis_media_timestamp = None
         self._analytics_reset_pending = False
 
+    def _tracked_observations(self, tracked, namespace: int = 0):
+        """Attach compact UI IDs without weakening collision-safe tracker IDs."""
+        observations = []
+        for item in tracked:
+            track_id = int(item.id) + namespace
+            display_id = self._display_track_ids.get(track_id)
+            if display_id is None:
+                display_id = self._next_display_track_id
+                self._display_track_ids[track_id] = display_id
+                self._next_display_track_id += 1
+            observations.append({
+                'id': track_id, 'display_id': display_id,
+                'bbox': item.bbox, 'confidence': item.confidence,
+            })
+        return observations
+
     def _reader_loop(self):
         frame_id = max(0, self.latest_frame_id) + 1
         started = time.monotonic() - frame_id / self.reader.fps
@@ -294,10 +312,7 @@ class VideoProcessor:
             elapsed = 0. if self._last_analysis_media_timestamp is None else max(0., media_timestamp - self._last_analysis_media_timestamp)
             analysis_timestamp = self.timestamp + elapsed
             tracked = self.tracker.update(detections, analysis_timestamp)
-            namespaced = [
-                {'id': item.id + self._track_id_namespace, 'bbox': item.bbox, 'confidence': item.confidence}
-                for item in tracked
-            ]
+            namespaced = self._tracked_observations(tracked, self._track_id_namespace)
             self.engine.update(namespaced, analysis_timestamp)
             self.frame, self.timestamp = frame_id, analysis_timestamp
             self._last_analysis_media_timestamp = media_timestamp
@@ -344,7 +359,7 @@ class VideoProcessor:
             except DetectorUnavailable as exc:
                 self.detector_error = str(exc)
                 return False
-        tracked = self.tracker.update(detections, timestamp)
+        tracked = self._tracked_observations(self.tracker.update(detections, timestamp))
         with self.analytics_lock:
             self.engine.update(tracked, timestamp)
             self.frame, self.timestamp = frame_number, timestamp

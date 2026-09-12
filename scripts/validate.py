@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare SalmonSight's actual directional crossing counts with manual counts."""
+"""Compare Fyolo's actual directional crossing counts with manual counts."""
 import argparse
 import json
 from pathlib import Path
@@ -61,7 +61,7 @@ def main():
         result = validate(args.video, args.ground_truth, args.detections)
     except (ValueError, OSError) as exc:
         parser.exit(1, f'Validation failed: {exc}\n')
-    for label, key in [('Human passage count', 'human_passage_count'), ('SalmonSight passage count', 'salmonsight_passage_count'), ('Absolute count error', 'absolute_count_error'), ('Percentage count error', 'percentage_count_error'), ('Tracks produced', 'tracks_produced'), ('Average processing FPS', 'average_processing_fps')]:
+    for label, key in [('Human passage count', 'human_passage_count'), ('Fyolo passage count', 'salmonsight_passage_count'), ('Absolute count error', 'absolute_count_error'), ('Percentage count error', 'percentage_count_error'), ('Tracks produced', 'tracks_produced'), ('Average processing FPS', 'average_processing_fps')]:
         value = result[key]
         print(f'{label}: {value if value is not None else "N/A (zero ground truth)"}')
     print(json.dumps(result['directional_counts'], indent=2))

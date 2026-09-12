@@ -23,7 +23,7 @@ trap cleanup EXIT INT TERM
 salmon_backend_pid=$!
 (cd frontend && exec node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port 3000) &
 salmon_frontend_pid=$!
-echo "SalmonSight — http://localhost:3000 · API http://localhost:$salmon_port/docs"
+echo "Fyolo — http://localhost:3000 · API http://localhost:$salmon_port/docs"
 while kill -0 "$salmon_backend_pid" 2>/dev/null && kill -0 "$salmon_frontend_pid" 2>/dev/null; do
   sleep 1
 done

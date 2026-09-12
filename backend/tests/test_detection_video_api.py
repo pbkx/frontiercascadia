@@ -191,6 +191,9 @@ def test_recorded_playback_pause_and_seek_freeze_analytics(video, monkeypatch):
     assert processor.engine.heatmaps.density[2, 3] == 4.0
     assert processor.engine.archived
     assert all(track_id >= 1_000_000 for track_id in processor.engine.tracks)
+    visible_tracks = processor.engine.snapshot()['tracks']
+    assert all(track['display_id'] < 100 for track in visible_tracks)
+    assert len({track['display_id'] for track in visible_tracks}) == len(visible_tracks)
     processor.close()
 
 
@@ -361,6 +364,11 @@ def test_api_health_session_websocket_controls_and_calibration(monkeypatch):
                 if result['tracks']:
                     break
             assert len(result['tracks']) > 0
+            analytics = client.get(root + '/analytics?range=5m')
+            assert analytics.status_code == 200
+            assert analytics.json()['summary']['fish_tracked'] > 0
+            assert analytics.json()['range'] == '5m'
+            assert client.get(root + '/analytics?range=day').status_code == 422
         assert not client.post(root + '/pause').json()['session']['running']
         invalid = client.post(root + '/calibration', json={'gate': [[0, 0], [0, 0]]})
         assert invalid.status_code == 422
