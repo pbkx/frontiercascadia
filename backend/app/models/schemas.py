@@ -13,6 +13,10 @@ class URLSource(BaseModel):
     url: str = Field(min_length=8, max_length=4096)
 
 
+class PlaybackSeek(BaseModel):
+    seconds: float = Field(ge=0, allow_inf_nan=False)
+
+
 class Calibration(BaseModel):
     upstream: Point = (1., 0.)
     gate: tuple[Point, Point] = ((0.65, 0.26), (0.65, 0.74))
@@ -103,6 +107,10 @@ class SourceState(BaseModel):
     reconnect_attempts: int = 0
     display_fps: float = 0
     stream_active: bool = False
+    seekable: bool = False
+    playback_paused: bool = False
+    playback_position: float = 0
+    analysis_generation: int = 0
 
 
 class Crossing(BaseModel):

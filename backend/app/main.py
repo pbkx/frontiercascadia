@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from contextlib import suppress
 import asyncio
 import time
 from pathlib import Path
@@ -7,17 +8,36 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from .config import ROOT, settings
-from .models.schemas import SessionCreate, URLSource, Calibration, Snapshot, TrackRecord, PassageEvent, PassageSummary
+from .models.schemas import SessionCreate, URLSource, PlaybackSeek, Calibration, Snapshot, TrackRecord, PassageEvent, PassageSummary
 from .services.sessions import Session, sessions
 from .video.sources import discover_demo, resolve_stream
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
-    for session in list(sessions.values()):
-        await session.close()
-    sessions.clear()
+    async def reap_abandoned_sessions():
+        while True:
+            await asyncio.sleep(10)
+            now = time.monotonic()
+            stale = [
+                (session_id, session) for session_id, session in list(sessions.items())
+                if session.client_count == 0 and now - session.last_access >= settings.abandoned_session_seconds
+            ]
+            for session_id, session in stale:
+                if sessions.get(session_id) is session:
+                    sessions.pop(session_id, None)
+                    await session.close()
+
+    janitor = asyncio.create_task(reap_abandoned_sessions())
+    try:
+        yield
+    finally:
+        janitor.cancel()
+        with suppress(asyncio.CancelledError):
+            await janitor
+        for session in list(sessions.values()):
+            await session.close()
+        sessions.clear()
 
 
 app = FastAPI(title='SalmonSight', version='1.0.0', lifespan=lifespan)
@@ -83,6 +103,39 @@ async def pause(session_id: str):
     session = get_session(session_id)
     async with session.lock:
         await session.stop()
+    return session.snapshot()
+
+
+@app.post('/api/sessions/{session_id}/playback/pause', response_model=Snapshot)
+async def pause_playback(session_id: str):
+    session = get_session(session_id)
+    async with session.lock:
+        try:
+            await session.pause_playback()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+    return session.snapshot()
+
+
+@app.post('/api/sessions/{session_id}/playback/resume', response_model=Snapshot)
+async def resume_playback(session_id: str):
+    session = get_session(session_id)
+    async with session.lock:
+        try:
+            await session.resume_playback()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+    return session.snapshot()
+
+
+@app.post('/api/sessions/{session_id}/playback/seek', response_model=Snapshot)
+async def seek_playback(session_id: str, body: PlaybackSeek):
+    session = get_session(session_id)
+    async with session.lock:
+        try:
+            await session.seek_playback(body.seconds)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
     return session.snapshot()
 
 
@@ -171,6 +224,12 @@ async def delete_session(session_id: str):
     return {'deleted': True}
 
 
+@app.post('/api/sessions/{session_id}/close')
+async def close_session_beacon(session_id: str):
+    """Beacon-friendly cleanup used when a browser tab closes or reloads."""
+    return await delete_session(session_id)
+
+
 @app.get('/api/sessions/{session_id}/original')
 async def original(session_id: str):
     session = get_session(session_id)
@@ -186,15 +245,20 @@ async def video_frames(session_id: str):
         raise HTTPException(404, 'Illustrative simulation has no recorded video.')
 
     async def frames():
+        session.client_count += 1
         previous = None
-        while session.id in sessions:
-            current = session.processor.jpeg
-            if current and current is not previous:
-                previous = current
-                yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + current + b'\r\n'
-            # Display cadence is independent of detector cadence. The endpoint
-            # only publishes the newest JPEG and never buffers historical frames.
-            await asyncio.sleep(1 / 60)
+        try:
+            while session.id in sessions:
+                current = session.processor.jpeg
+                if current and current is not previous:
+                    previous = current
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + current + b'\r\n'
+                # Display cadence is independent of detector cadence. The endpoint
+                # only publishes the newest JPEG and never buffers historical frames.
+                await asyncio.sleep(1 / 60)
+        finally:
+            session.client_count = max(0, session.client_count - 1)
+            session.last_access = time.monotonic()
 
     return StreamingResponse(frames(), media_type='multipart/x-mixed-replace; boundary=frame', headers={'Cache-Control': 'no-store'})
 
@@ -206,6 +270,7 @@ async def websocket(websocket: WebSocket, session_id: str):
         return
     await websocket.accept()
     session = sessions[session_id]
+    session.client_count += 1
     previous_tracks = {}
     previous_timestamp = -1.
     try:
@@ -228,3 +293,6 @@ async def websocket(websocket: WebSocket, session_id: str):
             await asyncio.sleep(1 / session.processor.sample_fps)
     except (WebSocketDisconnect, RuntimeError, OSError):
         pass
+    finally:
+        session.client_count = max(0, session.client_count - 1)
+        session.last_access = time.monotonic()

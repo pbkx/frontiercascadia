@@ -112,19 +112,22 @@ def test_direct_and_youtube_urls_resolve_without_exposing_page_url(monkeypatch):
     class FakeYoutubeDL:
         def __init__(self, options):
             assert 'bestvideo' in options['format']
+            assert 'height<=720' in options['format']
+            assert options['format'].startswith('bestvideo[height<=720][ext=mp4][protocol=https]')
         def __enter__(self):
             return self
         def __exit__(self, *_):
             pass
         def extract_info(self, url, download=False):
             assert not download and 'watch?v=' in url
-            return {'url': 'https://media.example/live.m3u8', 'title': 'Camera', 'is_live': True}
+            return {'url': 'https://media.example/live.m3u8', 'title': 'Camera', 'is_live': True, 'duration': 123}
 
     monkeypatch.setitem(sys.modules, 'yt_dlp', SimpleNamespace(YoutubeDL=FakeYoutubeDL))
     youtube = resolve_stream('https://www.youtube.com/watch?v=fixture')
     assert youtube.resolved_url == 'https://media.example/live.m3u8'
     assert youtube.original_url != youtube.resolved_url
     assert youtube.is_youtube and youtube.is_live
+    assert youtube.duration == 123
 
 
 def test_display_reader_is_paced_and_inference_skips_stale_frames(video, monkeypatch):
@@ -149,6 +152,48 @@ def test_display_reader_is_paced_and_inference_skips_stale_frames(video, monkeyp
     processor.close()
 
 
+def test_recorded_playback_pause_and_seek_freeze_analytics(video, monkeypatch):
+    monkeypatch.setattr('backend.app.video.processor.create_detector', FixtureDetector)
+    processor = VideoProcessor(video)
+    processor.start_reader()
+    deadline = time.monotonic() + 2
+    while processor.latest_frame_id < 3 and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert processor.seekable
+    assert processor.detect_latest() is True
+    processor.engine.counts['upstream'] = 3
+    processor.engine.counts['reversals'] = 2
+    processor.engine.heatmaps.density[2, 3] = 4.0
+    processor.set_playback_paused(True)
+    time.sleep(.1)  # allow an already-started display read to settle
+    frozen_frame = processor.latest_frame_id
+    frozen_summary = processor.engine.snapshot()['summary']
+    time.sleep(.2)
+    assert processor.latest_frame_id == frozen_frame
+    assert processor.detect_latest() is None
+    assert processor.engine.snapshot()['summary'] == frozen_summary
+
+    position = processor.seek(3.0)
+    assert position == pytest.approx(3.0, abs=1 / processor.reader.fps)
+    assert processor.playback_paused
+    assert processor.engine.snapshot()['summary'] == frozen_summary
+    assert processor.analysis_generation == 0
+
+    processor.set_playback_paused(False)
+    deadline = time.monotonic() + 2
+    while processor.latest_frame_id <= round(3 * processor.reader.fps) and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert processor.detect_latest() is True
+    assert processor.analysis_generation == 1
+    preserved = processor.engine.snapshot()['summary']
+    assert preserved['upstream'] == 3
+    assert preserved['reversals'] == 2
+    assert processor.engine.heatmaps.density[2, 3] == 4.0
+    assert processor.engine.archived
+    assert all(track_id >= 1_000_000 for track_id in processor.engine.tracks)
+    processor.close()
+
+
 def test_live_reader_reconnects_after_a_failed_read(monkeypatch):
     frame = np.full((90, 160, 3), 50, np.uint8)
 
@@ -166,8 +211,9 @@ def test_live_reader_reconnects_after_a_failed_read(monkeypatch):
         def read_next(self):
             self.calls += 1
             return None if self.calls == 1 else frame.copy()
-        def reconnect(self):
+        def reconnect(self, *, refresh=True):
             self.reconnections += 1
+            assert not refresh
         def close(self):
             pass
 
@@ -182,6 +228,45 @@ def test_live_reader_reconnects_after_a_failed_read(monkeypatch):
     assert processor.reconnect_attempts == 1
     assert processor.jpeg.startswith(b'\xff\xd8')
     assert processor.stream_error is None
+    processor.close()
+
+
+def test_live_reader_keeps_reconnecting_after_retry_budget(monkeypatch):
+    frame = np.full((90, 160, 3), 80, np.uint8)
+
+    class RecoveringReader:
+        fps = 30.
+        total_frames = 0
+        duration = None
+        width = 160
+        height = 90
+        is_live = True
+        def __init__(self, source):
+            self.calls = 0
+            self.refreshes = []
+        def read(self, number):
+            return frame.copy()
+        def read_next(self):
+            self.calls += 1
+            return frame.copy() if self.calls > 3 else None
+        def reconnect(self, *, refresh=True):
+            self.refreshes.append(refresh)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(settings, 'stream_reconnect_attempts', 2)
+    monkeypatch.setattr('backend.app.video.processor.VideoReader', RecoveringReader)
+    monkeypatch.setattr('backend.app.video.processor.create_detector', FixtureDetector)
+    processor = VideoProcessor(StreamSource('https://example.com/live.m3u8', 'https://media.example/live.m3u8', 'Test live'))
+    processor.start_reader()
+    deadline = time.monotonic() + 5
+    while processor.latest_frame_id < 1 and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert processor.reader.calls > settings.stream_reconnect_attempts
+    assert processor.reader.refreshes == [False, True, False]
+    assert processor.jpeg.startswith(b'\xff\xd8')
+    assert processor.stream_error is None
+    assert processor.reconnecting is False
     processor.close()
 
 
@@ -298,6 +383,7 @@ def test_upload_requires_calibration_and_missing_model_does_not_fake_tracks(vide
         assert response.status_code == 200
         state = response.json()['session']
         assert state['calibration_required']
+        assert state['playback_paused']
         assert 'Fishial model missing' in state['error']
         assert response.json()['tracks'] == []
         assert client.post(root + '/start').status_code == 409

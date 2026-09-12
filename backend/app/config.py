@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.20
     inference_sample_fps: float = 10.0
     stream_reconnect_attempts: int = 8
+    stream_open_timeout_ms: int = 10000
+    stream_read_timeout_ms: int = 5000
+    abandoned_session_seconds: float = 30.0
     passage_rate_min_seconds: float = 300.0
     reversal_threshold: float = 0.025
     dwell_threshold_seconds: float = 8.0

@@ -26,6 +26,7 @@ class StreamSource:
     display_name: str
     is_live: bool = True
     is_youtube: bool = False
+    duration: float | None = None
 
 
 def is_youtube_url(value: str) -> bool:
@@ -52,7 +53,10 @@ def resolve_stream(value: str, *, default_name: str | None = None) -> StreamSour
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
-        'format': 'bestvideo[protocol=m3u8]/bestvideo[protocol=m3u8_native]/bestvideo/best',
+        # Recorded YouTube HLS manifests are unreliable when OpenCV seeks.
+        # Prefer a progressive HTTP MP4 for recorded videos, then fall back to
+        # HLS for live sources. 720p is ample for the 640px detector input.
+        'format': 'bestvideo[height<=720][ext=mp4][protocol=https]/best[height<=720][ext=mp4][protocol=https]/best[height<=720][protocol=m3u8_native]/bestvideo[height<=720][protocol=m3u8_native]/best[height<=720]/bestvideo[height<=720]/best',
         'socket_timeout': 15,
         'retries': 2,
         'extractor_retries': 2,
@@ -68,7 +72,9 @@ def resolve_stream(value: str, *, default_name: str | None = None) -> StreamSour
     title = default_name or info.get('title') or 'YouTube live stream'
     live_status = info.get('live_status')
     is_live = bool(info.get('is_live')) or live_status in {'is_live', 'is_upcoming'}
-    return StreamSource(value, media_url, str(title), is_live, True)
+    duration = info.get('duration')
+    duration = float(duration) if isinstance(duration, (int, float)) and duration > 0 else None
+    return StreamSource(value, media_url, str(title), is_live, True, duration)
 
 
 def video_digest(path: Path) -> str:
@@ -113,8 +119,8 @@ class VideoReader:
         if self.is_stream:
             try:
                 cap = cv2.VideoCapture(decoder, cv2.CAP_FFMPEG, [
-                    cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 12000,
-                    cv2.CAP_PROP_READ_TIMEOUT_MSEC, 12000,
+                    cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, settings.stream_open_timeout_ms,
+                    cv2.CAP_PROP_READ_TIMEOUT_MSEC, settings.stream_read_timeout_ms,
                 ])
             except (TypeError, cv2.error):
                 cap = cv2.VideoCapture(decoder, cv2.CAP_FFMPEG)
@@ -129,6 +135,9 @@ class VideoReader:
         if not 0 < self.fps < 1000:
             self.fps = 30.
         self.total_frames = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        measured_duration = self.total_frames / self.fps if self.total_frames else None
+        source_duration = self.source.duration if isinstance(self.source, StreamSource) else None
+        self.duration = source_duration or measured_duration
         self.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
         self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
         self.last_frame = -1
@@ -152,10 +161,10 @@ class VideoReader:
                 self.last_frame += 1
             return frame if ok else None
 
-    def reconnect(self):
+    def reconnect(self, *, refresh: bool = True):
         with self.lock:
             self.cap.release()
-            if isinstance(self.source, StreamSource) and self.source.is_youtube:
+            if refresh and isinstance(self.source, StreamSource) and self.source.is_youtube:
                 self.source = resolve_stream(self.source.original_url, default_name=self.source.display_name)
             self._open()
 

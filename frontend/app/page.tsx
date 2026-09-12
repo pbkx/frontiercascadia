@@ -6,13 +6,14 @@ import {
   LoaderCircle, Pause, Play, Radio, Settings2, Upload, WifiOff, X,
 } from "lucide-react";
 import ObservationCanvas from "@/components/ObservationCanvas";
-import { api, backendUrl } from "@/lib/api";
+import { api, backendUrl, formatTime } from "@/lib/api";
 import {
   DEFAULT_GATE, EMPTY_SUMMARY, type Gate, type Point, type Snapshot,
   type Track, type TrackFilter, type ViewMode,
 } from "@/lib/types";
 
 const FILTERS: TrackFilter[] = ["All", "Upstream", "Downstream", "Reversals", "Long dwell", "Selected"];
+const DEFAULT_STREAM_URL = "https://www.youtube.com/watch?v=tWFigWkp98o";
 const DIRECTIONS: { name: string; vector: Point; icon: typeof ArrowUp }[] = [
   { name: "Left", vector: [-1, 0], icon: ArrowLeft },
   { name: "Right", vector: [1, 0], icon: ArrowRight },
@@ -46,9 +47,13 @@ export default function SalmonSight() {
   const [passageZones, setPassageZones] = useState(false);
   const [boxes, setBoxes] = useState(true);
   const [trails, setTrails] = useState(true);
+  const [playbackBusy, setPlaybackBusy] = useState(false);
+  const [seekValue, setSeekValue] = useState(0);
+  const [scrubbing, setScrubbing] = useState(false);
   const histories = useRef(new Map<number, Track>());
   const initialized = useRef(false);
   const currentSession = useRef<string | null>(null);
+  const defaultConnectInFlight = useRef(false);
   const lastTimestamp = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -87,7 +92,13 @@ export default function SalmonSight() {
     setPacket(next);
   }, []);
 
+  useEffect(() => {
+    if (!scrubbing && session?.seekable) setSeekValue(session.playback_position);
+  }, [scrubbing, session?.playback_position, session?.seekable]);
+
   const createDefault = useCallback(async () => {
+    if (defaultConnectInFlight.current) return false;
+    defaultConnectInFlight.current = true;
     setConnecting(true);
     setError(null);
     try {
@@ -101,9 +112,12 @@ export default function SalmonSight() {
       if (oldId && oldId !== next.session.id) void api(`/api/sessions/${oldId}`, { method: "DELETE" }).catch(() => undefined);
       setSourceOpen(false);
       setMode("live");
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to connect to this stream. Try again or choose another source.");
+      return false;
     } finally {
+      defaultConnectInFlight.current = false;
       setConnecting(false);
     }
   }, [acceptPacket]);
@@ -112,6 +126,24 @@ export default function SalmonSight() {
     if (initialized.current) return;
     initialized.current = true;
     void createDefault();
+  }, [createDefault]);
+
+  useEffect(() => {
+    const closeSession = () => {
+      const id = currentSession.current;
+      if (!id) return;
+      navigator.sendBeacon(`${backendUrl()}/api/sessions/${id}/close`);
+      currentSession.current = null;
+    };
+    const restoreSession = () => {
+      if (!currentSession.current) void createDefault();
+    };
+    window.addEventListener("pagehide", closeSession);
+    window.addEventListener("pageshow", restoreSession);
+    return () => {
+      window.removeEventListener("pagehide", closeSession);
+      window.removeEventListener("pageshow", restoreSession);
+    };
   }, [createDefault]);
 
   useEffect(() => {
@@ -124,12 +156,30 @@ export default function SalmonSight() {
       socket = new WebSocket(`${backendUrl().replace(/^http/, "ws")}/ws/sessions/${session.id}`);
       socket.onmessage = event => { try { acceptPacket(JSON.parse(event.data)); } catch { /* retain last valid state */ } };
       socket.onclose = () => {
-        if (!disposed) retry = setTimeout(connect, 2000);
+        if (disposed) return;
+        retry = setTimeout(async () => {
+          if (disposed) return;
+          try {
+            const response = await fetch(`${backendUrl()}/api/sessions/${session.id}`, { signal: AbortSignal.timeout(4000) });
+            if (response.status === 404) {
+              if (currentSession.current !== session.id) return;
+              if (session.source_type === "live" && session.source_origin === DEFAULT_STREAM_URL) {
+                currentSession.current = null;
+                const recovered = await createDefault();
+                if (!recovered && !disposed) connect();
+              } else {
+                setError("The backend session ended. Choose the source again to continue.");
+              }
+              return;
+            }
+          } catch { /* backend may still be restarting; retry the socket */ }
+          connect();
+        }, 2000);
       };
     };
     connect();
     return () => { disposed = true; clearTimeout(retry); socket?.close(); };
-  }, [session?.id, acceptPacket]);
+  }, [session?.id, session?.source_origin, session?.source_type, acceptPacket, createDefault]);
 
   const ensureSession = async () => {
     if (session?.id) return session.id;
@@ -204,11 +254,45 @@ export default function SalmonSight() {
     } finally { setBusy(false); }
   };
 
-  const videoUrl = session?.video_url ? `${session.video_url.startsWith("http") ? "" : backendUrl()}${session.video_url}` : null;
-  const stateText = session?.reconnecting ? "RECONNECTING" : session?.label || "NO SOURCE";
-  const isActivelyLive = session?.source_type === "live" && session.stream_active;
+  const togglePlayback = async () => {
+    if (!session?.seekable) return;
+    setPlaybackBusy(true); setError(null);
+    try {
+      const action = session.playback_paused ? "resume" : "pause";
+      acceptPacket(await api<Snapshot>(`/api/sessions/${session.id}/playback/${action}`, { method: "POST" }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Playback could not be changed.");
+    } finally { setPlaybackBusy(false); }
+  };
 
-  return <main className={`app mode-${mode}`}>
+  useEffect(() => {
+    if (!scrubbing || !session?.seekable) return;
+    const id = session.id;
+    const seconds = seekValue;
+    const timer = setTimeout(async () => {
+      setPlaybackBusy(true); setError(null);
+      try {
+        acceptPacket(await api<Snapshot>(`/api/sessions/${id}/playback/seek`, {
+          method: "POST", body: JSON.stringify({ seconds }),
+        }));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Unable to seek this video.");
+      } finally {
+        setScrubbing(false);
+        setPlaybackBusy(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [acceptPacket, scrubbing, seekValue, session?.id, session?.seekable]);
+
+  const videoUrl = session?.video_url ? `${session.video_url.startsWith("http") ? "" : backendUrl()}${session.video_url}` : null;
+  const isActivelyLive = session?.source_type === "live" && session.stream_active;
+  const liveState = session?.source_type === "live"
+    ? isActivelyLive ? "LIVE" : session.reconnecting ? "RECONNECTING" : "OFFLINE"
+    : null;
+  const hasPlayback = Boolean(session?.seekable && session.duration && !session.calibration_required);
+
+  return <main className={`app mode-${mode}${hasPlayback ? " has-playback" : ""}`}>
     <div className="video-stage">
       {videoUrl && <img className="video-layer" src={videoUrl} alt="Current fish camera video" /> /* eslint-disable-line @next/next/no-img-element */}
       {!videoUrl && <div className="video-empty">
@@ -227,9 +311,9 @@ export default function SalmonSight() {
     <header className="topbar">
       {session && <div className="source-origin" title={session.source_origin}>{session.source_origin}</div>}
       {session && <div className="source-state">
-        {isActivelyLive
+        {liveState && (isActivelyLive
           ? <strong className="live-status"><i aria-hidden="true" />LIVE</strong>
-          : <strong>{session.source_type === "live" && !session.reconnecting ? "OFFLINE" : stateText}</strong>}
+          : <strong>{liveState}</strong>)}
         <span>{(packet?.processing_fps || 0).toFixed(1)} FPS</span>
       </div>}
     </header>
@@ -240,7 +324,7 @@ export default function SalmonSight() {
 
     {mode === "behavior" && <div className="mode-tools glass" role="group" aria-label="Heatmap type">
       <button className={heatmap === "density" ? "active" : ""} onClick={() => setHeatmap("density")}>Movement density</button>
-      <button className={heatmap === "friction" ? "active" : ""} onClick={() => setHeatmap("friction")}>Reversal / dwell hotspot</button>
+      <button className={heatmap === "friction" ? "active" : ""} onClick={() => setHeatmap("friction")}>Dwell hotspot</button>
     </div>}
 
     <section className="metrics glass" aria-label="Tracking metrics">
@@ -261,6 +345,18 @@ export default function SalmonSight() {
       <dl><div><dt>Direction</dt><dd>{selectedTrack.direction}</dd></div><div><dt>Dwell time</dt><dd>{selectedTrack.dwell_time.toFixed(1)}s</dd></div><div><dt>Reversals</dt><dd>{selectedTrack.reversals}</dd></div><div><dt>Observed</dt><dd>{selectedTrack.time_observed.toFixed(1)}s</dd></div></dl>
     </aside>}
 
+    {hasPlayback && session?.duration && <div className="playback-controls" aria-label="Video playback controls">
+      <button onClick={() => void togglePlayback()} disabled={playbackBusy} aria-label={session.playback_paused ? "Play video" : "Pause video"}>
+        {playbackBusy ? <LoaderCircle className="spin" size={15} /> : session.playback_paused ? <Play size={15} /> : <Pause size={15} />}
+      </button>
+      <span>{formatTime(seekValue)} / {formatTime(session.duration)}</span>
+      <input
+        type="range" min={0} max={session.duration} step={Math.max(.04, 1 / (session.display_fps || 25))}
+        value={Math.min(seekValue, session.duration)} aria-label="Video position"
+        onChange={event => { setSeekValue(Number(event.target.value)); setScrubbing(true); }}
+      />
+    </div>}
+
     <div className="bottom-ui">
       <button className="analysis-button glass" onClick={() => void toggleAnalysis()} disabled={busy || connecting || calibrating} aria-label={session?.running ? "Pause analysis" : "Start analysis"}>
         {busy || connecting ? <LoaderCircle className="spin" size={15} /> : session?.running ? <Pause size={14} /> : <Play size={14} />}
@@ -273,14 +369,14 @@ export default function SalmonSight() {
       <button className="settings-button glass" aria-label="Open calibration settings" onClick={() => { setSettingsOpen(true); setCalibrating(true); }}><Settings2 size={15} /></button>
     </div>
 
-    {session?.completed && <div className="notice glass">Uploaded video ended. Choose replay or another source.</div>}
+    {session?.completed && <div className="notice glass">Video ended. Play again, seek, or choose another source.</div>}
     {(error || session?.error) && <div className="error-banner glass" role="alert"><WifiOff size={15} /><span>{error || session?.error}</span><button aria-label="Dismiss error" onClick={() => setError(null)}><X size={14} /></button></div>}
 
     {settingsOpen && <aside className="settings-panel glass" aria-label="Calibration settings">
       <div className="panel-title"><strong>Calibration</strong><button aria-label="Close calibration settings" onClick={() => { setSettingsOpen(false); setCalibrating(false); }}><X size={16} /></button></div>
       <label>Upstream direction</label>
       <div className="direction-grid">{DIRECTIONS.map(direction => <button key={direction.name} aria-label={`Upstream ${direction.name.toLowerCase()}`} className={upstream[0] === direction.vector[0] && upstream[1] === direction.vector[1] ? "active" : ""} onClick={() => setUpstream(direction.vector)}><direction.icon size={17} /><span>{direction.name}</span></button>)}</div>
-      <button className="line-control" onClick={() => setCalibrating(value => !value)}><Crosshair size={14} />{calibrating ? "Drag counting line endpoints" : "Adjust counting line"}</button>
+      <button className={`line-control${calibrating ? " active" : ""}`} onClick={() => setCalibrating(value => !value)}><Crosshair size={14} />{calibrating ? "Drag counting line endpoints" : "Adjust counting line"}</button>
       <label className="check-row"><input type="checkbox" checked={passageZones} onChange={event => setPassageZones(event.target.checked)} /><span>Use entry and exit areas</span></label>
       <small>Enable only when the footage clearly shows both areas. This unlocks passage success and attempt metrics.</small>
       <label className="check-row"><input type="checkbox" checked={boxes} onChange={event => setBoxes(event.target.checked)} /><span>Bounding boxes</span></label>
@@ -291,14 +387,11 @@ export default function SalmonSight() {
     {sourceOpen && <div className="modal-backdrop" onClick={() => setSourceOpen(false)}>
       <section className="source-modal glass" role="dialog" aria-modal="true" aria-labelledby="source-title" onClick={event => event.stopPropagation()}>
         <div className="panel-title"><h2 id="source-title">Source</h2><button aria-label="Close source panel" onClick={() => setSourceOpen(false)}><X size={17} /></button></div>
-        <button className="default-source" disabled={busy || connecting} onClick={() => void createDefault()}><Radio size={17} /><span><strong>Issaquah SalmonCam</strong><small>Default YouTube live stream</small></span></button>
-        <div className="or"><span>or</span></div>
-        <label htmlFor="stream-url">YouTube / stream URL</label>
+        <label htmlFor="stream-url">YouTube URL</label>
         <input id="stream-url" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" />
         <button className="connect-button" disabled={busy} onClick={() => void connectUrl()}>{busy ? <LoaderCircle className="spin" size={14} /> : <Activity size={14} />} Connect</button>
         <div className="or"><span>or</span></div>
-        <button className="upload-button" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={15} /> Upload MP4 / MOV</button>
-        <small className="source-help">MP4, MOV, and supported AVI files run through the same local detector and tracker.</small>
+        <button className="upload-button" disabled={busy} onClick={() => fileInput.current?.click()}><Upload size={15} /> Upload MP4 / MOV / AVI</button>
       </section>
     </div>}
 

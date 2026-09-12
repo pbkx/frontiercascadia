@@ -45,6 +45,10 @@ export interface Session {
   reconnect_attempts: number;
   display_fps: number;
   stream_active: boolean;
+  seekable: boolean;
+  playback_paused: boolean;
+  playback_position: number;
+  analysis_generation: number;
 }
 export interface Summary {
   upstream: number;

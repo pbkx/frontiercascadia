@@ -21,6 +21,7 @@ class VideoProcessor:
 
     def __init__(self, video: Path | str | StreamSource | None = None, cache: Path | None = None, calibration: dict | None = None):
         self.video = video
+        self.calibration = calibration or {}
         self.reader = VideoReader(video) if video else None
         self.cache = None
         self.detector = None
@@ -45,9 +46,10 @@ class VideoProcessor:
                 # Video remains available even when local inference is not.
                 self.detector_error = str(exc)
         self.tracker = Tracker(sample_fps=self.sample_fps, detection_threshold=settings.confidence_threshold)
-        self.engine = BehaviorEngine(calibration=calibration, sample_fps=self.sample_fps)
+        self.engine = BehaviorEngine(calibration=self.calibration, sample_fps=self.sample_fps)
         self.analytics_lock = RLock()
         self.frame_lock = RLock()
+        self.playback_lock = RLock()
         self.index = 0
         self.frame = 0
         self.timestamp = 0.
@@ -58,12 +60,19 @@ class VideoProcessor:
         self.reconnecting = False
         self.reconnect_attempts = 0
         self.display_fps = 0.
+        self.last_frame_at = 0.
         self.latest_frame = None
         self.latest_frame_id = -1
         self.latest_timestamp = 0.
         self.processed_frame_id = -1
         self.reader_thread: Thread | None = None
         self.stop_reader_event = Event()
+        self.playback_paused = False
+        self._seek_request = None
+        self._analytics_reset_pending = False
+        self.analysis_generation = 0
+        self._last_analysis_media_timestamp = None
+        self._track_id_namespace = 0
         self._display_times = deque(maxlen=61)
         self._detection_times = deque(maxlen=31)
         self.analysis_fps = 0.
@@ -71,6 +80,19 @@ class VideoProcessor:
             preview = self.reader.read(0)
             if preview is not None:
                 self._publish_frame(preview, 0, 0.)
+
+    @property
+    def seekable(self):
+        return bool(self.reader and not self.reader.is_live and not self.cache and self.reader.duration)
+
+    @property
+    def display_is_fresh(self):
+        """Whether the display has received a frame recently enough to be live."""
+        return bool(self.jpeg and self.last_frame_at and time.monotonic() - self.last_frame_at < 2.)
+
+    @property
+    def current_display_fps(self):
+        return self.display_fps if self.display_is_fresh else 0.
 
     @property
     def error(self):
@@ -98,6 +120,7 @@ class VideoProcessor:
             self.latest_frame_id = frame_id
             self.latest_timestamp = timestamp
             self.jpeg = jpeg
+            self.last_frame_at = now
             self._display_times.append(now)
             if len(self._display_times) > 1:
                 elapsed = self._display_times[-1] - self._display_times[0]
@@ -113,11 +136,89 @@ class VideoProcessor:
         self.reader_thread = Thread(target=self._reader_loop, name='salmonsight-video-reader', daemon=True)
         self.reader_thread.start()
 
+    def set_playback_paused(self, paused: bool):
+        if not self.seekable:
+            raise ValueError('Playback controls are available only for recorded video.')
+        with self.playback_lock:
+            self.playback_paused = bool(paused)
+
+    def seek(self, seconds: float):
+        if not self.seekable:
+            raise ValueError('This video does not provide a seekable timeline.')
+        duration = float(self.reader.duration)
+        seconds = min(max(0., float(seconds)), max(0., duration - 1 / self.reader.fps))
+        target = max(0, round(seconds * self.reader.fps))
+        done = Event()
+        result = {}
+        with self.playback_lock:
+            was_paused = self.playback_paused
+            # Freeze display advancement and inference while the reader moves.
+            # This prevents the playback loop from racing past a remote seek.
+            self.playback_paused = True
+            if self._seek_request is not None:
+                self._seek_request[2]['error'] = 'A newer seek replaced this request.'
+                self._seek_request[1].set()
+            self._seek_request = (target, done, result)
+            self.source_ended = False
+            self.completed = False
+            self._analytics_reset_pending = abs(target - self.latest_frame_id) > 1
+        try:
+            self.start_reader()
+            if not done.wait(1) and (not self.reader_thread or not self.reader_thread.is_alive()):
+                self.start_reader()
+            if not done.wait(14):
+                with self.playback_lock:
+                    if self._seek_request and self._seek_request[1] is done:
+                        self._seek_request = None
+                raise ValueError('Unable to seek this video. Try another source or format.')
+            if result.get('error'):
+                raise ValueError(result['error'])
+            return self.latest_timestamp
+        finally:
+            with self.playback_lock:
+                self.playback_paused = was_paused
+
+    def _reset_analytics(self):
+        """Start a disconnected tracking segment without discarding observations."""
+        with self.analytics_lock:
+            # A timeline jump must not connect a fish before the seek to a fish
+            # after it. Archive active tracks and restart ByteTrack, while
+            # retaining counters, archived trajectories, events, and heatmaps.
+            self.engine.finish(self.timestamp)
+            self.tracker = Tracker(sample_fps=self.sample_fps, detection_threshold=settings.confidence_threshold)
+            self.processed_frame_id = -1
+            self.analysis_fps = 0.
+            self._detection_times.clear()
+            self.analysis_generation += 1
+            self._track_id_namespace = self.analysis_generation * 1_000_000
+            self._last_analysis_media_timestamp = None
+        self._analytics_reset_pending = False
+
     def _reader_loop(self):
         frame_id = max(0, self.latest_frame_id) + 1
         started = time.monotonic() - frame_id / self.reader.fps
         consecutive_failures = 0
         while not self.stop_reader_event.is_set():
+            with self.playback_lock:
+                seek_request = self._seek_request
+                self._seek_request = None
+                paused = self.playback_paused
+            if seek_request is not None:
+                target, done, result = seek_request
+                frame = self.reader.read(target)
+                if frame is None:
+                    result['error'] = 'Unable to seek this video. Try another source or format.'
+                else:
+                    frame_id = target + 1
+                    started = time.monotonic() - frame_id / self.reader.fps
+                    self.source_ended = False
+                    self.stream_error = None
+                    self._publish_frame(frame, target, target / self.reader.fps)
+                done.set()
+                continue
+            if paused:
+                self.stop_reader_event.wait(.04)
+                continue
             # HLS demuxers can expose a whole downloaded segment immediately.
             # Pace both files and streams to source time instead of racing
             # through buffered live segments at hundreds of frames per second.
@@ -140,13 +241,21 @@ class VideoProcessor:
             consecutive_failures += 1
             self.reconnecting = True
             self.reconnect_attempts += 1
-            if consecutive_failures > settings.stream_reconnect_attempts:
+            retry_cycle = max(1, settings.stream_reconnect_attempts)
+            if consecutive_failures >= retry_cycle:
                 self.stream_error = 'Unable to connect to this stream. Try again or choose another source.'
-                break
-            if self.stop_reader_event.wait(min(8., .5 * 2 ** (consecutive_failures - 1))):
+            # A live source must never become permanently stuck on its last
+            # decoded frame. Keep retrying at a bounded cadence until frames
+            # return or the session is closed.
+            retry_delay = min(2., .25 * 2 ** min(consecutive_failures - 1, 3))
+            if self.stop_reader_event.wait(retry_delay):
                 break
             try:
-                self.reader.reconnect()
+                # Reopen the current signed media URL first. Refresh it through
+                # yt-dlp on the second failure and once per retry cycle. Avoid
+                # invoking yt-dlp on every transient failed read.
+                refresh = consecutive_failures == 2 or consecutive_failures % retry_cycle == 0
+                self.reader.reconnect(refresh=refresh)
                 frame_id = max(frame_id, self.latest_frame_id + 1)
                 started = time.monotonic() - frame_id / self.reader.fps
             except (ValueError, OSError):
@@ -154,8 +263,12 @@ class VideoProcessor:
 
     def detect_latest(self):
         """Return True after inference, None while waiting, or False at terminal state."""
-        if self.completed or self.detector_error or self.stream_error:
+        if self.completed or self.detector_error or (self.stream_error and not self.reconnecting):
             return False
+        if self.playback_paused:
+            return None
+        if self._analytics_reset_pending:
+            self._reset_analytics()
         with self.frame_lock:
             frame_id = self.latest_frame_id
             if frame_id == self.processed_frame_id or self.latest_frame is None:
@@ -166,16 +279,28 @@ class VideoProcessor:
             # A single frame reference is enough: reader publishes a new ndarray
             # instead of mutating this one, so there is no growing queue or copy.
             frame = self.latest_frame
-            timestamp = self.latest_timestamp
+            media_timestamp = self.latest_timestamp
         try:
             detections = self.detector.detect(frame)
         except DetectorUnavailable as exc:
             self.detector_error = str(exc)
             return False
-        tracked = self.tracker.update(detections, timestamp)
+        if self.playback_paused:
+            return None
         with self.analytics_lock:
-            self.engine.update(tracked, timestamp)
-            self.frame, self.timestamp = frame_id, timestamp
+            # Analysis time measures footage actually observed. Seeking does not
+            # add or subtract time, which keeps behavior timestamps monotonic and
+            # preserves accumulated statistics across timeline jumps.
+            elapsed = 0. if self._last_analysis_media_timestamp is None else max(0., media_timestamp - self._last_analysis_media_timestamp)
+            analysis_timestamp = self.timestamp + elapsed
+            tracked = self.tracker.update(detections, analysis_timestamp)
+            namespaced = [
+                {'id': item.id + self._track_id_namespace, 'bbox': item.bbox, 'confidence': item.confidence}
+                for item in tracked
+            ]
+            self.engine.update(namespaced, analysis_timestamp)
+            self.frame, self.timestamp = frame_id, analysis_timestamp
+            self._last_analysis_media_timestamp = media_timestamp
         self.processed_frame_id = frame_id
         self.index += 1
         self._detection_times.append(time.monotonic())
@@ -231,6 +356,8 @@ class VideoProcessor:
         if self.completed:
             return
         self.completed = True
+        if self.seekable:
+            self.playback_paused = True
         with self.analytics_lock:
             self.engine.finish(self.timestamp)
 

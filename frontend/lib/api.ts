@@ -18,5 +18,9 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 }
 
 export function formatTime(seconds: number) {
-  return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor(whole % 3600 / 60);
+  const clock = `${minutes.toString().padStart(hours ? 2 : 1, "0")}:${(whole % 60).toString().padStart(2, "0")}`;
+  return hours ? `${hours}:${clock}` : clock;
 }

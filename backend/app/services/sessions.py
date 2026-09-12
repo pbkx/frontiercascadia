@@ -34,6 +34,7 @@ class Session:
         self.lock = asyncio.Lock()
         self.processing_fps = 0.
         self.last_access = time.monotonic()
+        self.client_count = 0
         self.version = 0
 
     async def start_display(self):
@@ -58,6 +59,10 @@ class Session:
     async def replace_source(self, video, *, display_name: str, source_type: str, calibration_required: bool):
         await self.stop()
         processor = await asyncio.to_thread(VideoProcessor, video, None, self.calibration.model_dump())
+        if calibration_required and processor.seekable:
+            # VideoProcessor publishes frame zero as a calibration preview.
+            # Keep recorded sources there until calibration has been saved.
+            await asyncio.to_thread(processor.set_playback_paused, True)
         old = self.processor
         self.video, self.cache = video, None
         self.display_name = display_name
@@ -85,6 +90,9 @@ class Session:
     async def run(self):
         next_detection = 0.
         while self.running:
+            if self.processor.playback_paused:
+                await asyncio.sleep(.04)
+                continue
             now = time.monotonic()
             if now < next_detection:
                 await asyncio.sleep(min(.02, next_detection - now))
@@ -109,6 +117,25 @@ class Session:
             else:
                 self.running = False
                 break
+
+    async def pause_playback(self):
+        await asyncio.to_thread(self.processor.set_playback_paused, True)
+        self.version += 1
+
+    async def resume_playback(self):
+        if self.calibration_required:
+            raise ValueError('Finish calibration before playing this video.')
+        if self.processor.completed or self.processor.source_ended:
+            await asyncio.to_thread(self.processor.seek, 0.)
+        await asyncio.to_thread(self.processor.set_playback_paused, False)
+        if not self.running and not self.calibration_required:
+            await self.start()
+        self.version += 1
+
+    async def seek_playback(self, seconds: float):
+        position = await asyncio.to_thread(self.processor.seek, seconds)
+        self.version += 1
+        return position
 
     def snapshot(self, lightweight: bool = True) -> dict:
         self.last_access = time.monotonic()
@@ -149,12 +176,14 @@ class Session:
             'video_url': f'/api/sessions/{self.id}/video' if self.video else None,
             'original_video_url': f'/api/sessions/{self.id}/original' if isinstance(self.video, Path) else None,
             'width': reader.width if reader else 1920, 'height': reader.height if reader else 1080,
-            'duration': reader.total_frames / reader.fps if reader and reader.total_frames and not reader.is_live else None,
+            'duration': reader.duration if reader and not reader.is_live else None,
             'calibration_required': self.calibration_required, 'calibration': self.calibration.model_dump(),
             'source_type': self.source_type, 'passage_calibrated': passage_calibrated,
             'reconnecting': p.reconnecting, 'reconnect_attempts': p.reconnect_attempts,
-            'display_fps': round(p.display_fps, 1),
-            'stream_active': self.source_type == 'live' and p.jpeg is not None and not p.reconnecting and not p.stream_error and not p.source_ended,
+            'display_fps': round(p.current_display_fps, 1),
+            'stream_active': self.source_type == 'live' and p.display_is_fresh and not p.reconnecting and not p.stream_error and not p.source_ended,
+            'seekable': p.seekable, 'playback_paused': p.playback_paused,
+            'playback_position': round(p.latest_timestamp, 3), 'analysis_generation': p.analysis_generation,
         }
         return {'session': state, 'frame': p.frame, 'timestamp': p.timestamp, 'processing_fps': round(self.processing_fps, 1), **analytics, 'simulation_fish': p.simulation_fish}
 
