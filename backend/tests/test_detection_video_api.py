@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from unittest.mock import Mock
 from types import SimpleNamespace
+import sys
+import time
 import cv2
 import numpy as np
 import pytest
@@ -13,7 +15,7 @@ from backend.app.detection.base import Detection, DetectorUnavailable
 from backend.app.detection.fishial import FishialDetector, normalize_yolo_result
 from backend.app.main import app
 from backend.app.models.schemas import DetectionCache
-from backend.app.video.sources import CachedPlayback, VideoReader, video_digest
+from backend.app.video.sources import CachedPlayback, StreamSource, VideoReader, resolve_stream, video_digest
 from backend.app.video.processor import VideoProcessor
 from backend.app.video.simulation import synthetic_fish
 from scripts.precompute_demo import precompute
@@ -102,6 +104,87 @@ def test_video_reader_seeks_and_repeats_exact_frame(video):
     reader.close()
 
 
+def test_direct_and_youtube_urls_resolve_without_exposing_page_url(monkeypatch):
+    direct = resolve_stream('https://example.com/camera/live.m3u8')
+    assert direct.resolved_url == direct.original_url
+    assert direct.is_live and not direct.is_youtube
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            assert 'bestvideo' in options['format']
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def extract_info(self, url, download=False):
+            assert not download and 'watch?v=' in url
+            return {'url': 'https://media.example/live.m3u8', 'title': 'Camera', 'is_live': True}
+
+    monkeypatch.setitem(sys.modules, 'yt_dlp', SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    youtube = resolve_stream('https://www.youtube.com/watch?v=fixture')
+    assert youtube.resolved_url == 'https://media.example/live.m3u8'
+    assert youtube.original_url != youtube.resolved_url
+    assert youtube.is_youtube and youtube.is_live
+
+
+def test_display_reader_is_paced_and_inference_skips_stale_frames(video, monkeypatch):
+    class SlowDetector(FixtureDetector):
+        def detect(self, frame):
+            time.sleep(.18)
+            return super().detect(frame)
+
+    monkeypatch.setattr('backend.app.video.processor.create_detector', SlowDetector)
+    processor = VideoProcessor(video)
+    processor.start_reader()
+    deadline = time.monotonic() + 2
+    while processor.latest_frame_id < 2 and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert processor.detect_latest() is True
+    first_processed = processor.processed_frame_id
+    time.sleep(.24)
+    assert processor.detect_latest() is True
+    assert processor.processed_frame_id - first_processed >= 2
+    assert 7 <= processor.display_fps <= 13
+    assert processor.latest_frame_id > processor.processed_frame_id
+    processor.close()
+
+
+def test_live_reader_reconnects_after_a_failed_read(monkeypatch):
+    frame = np.full((90, 160, 3), 50, np.uint8)
+
+    class FlakyReader:
+        fps = 10.
+        total_frames = 0
+        width = 160
+        height = 90
+        is_live = True
+        def __init__(self, source):
+            self.calls = 0
+            self.reconnections = 0
+        def read(self, number):
+            return frame.copy()
+        def read_next(self):
+            self.calls += 1
+            return None if self.calls == 1 else frame.copy()
+        def reconnect(self):
+            self.reconnections += 1
+        def close(self):
+            pass
+
+    monkeypatch.setattr('backend.app.video.processor.VideoReader', FlakyReader)
+    monkeypatch.setattr('backend.app.video.processor.create_detector', FixtureDetector)
+    processor = VideoProcessor(StreamSource('https://example.com/live.m3u8', 'https://media.example/live.m3u8', 'Test live'))
+    processor.start_reader()
+    deadline = time.monotonic() + 2
+    while processor.latest_frame_id < 1 and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert processor.reader.reconnections == 1
+    assert processor.reconnect_attempts == 1
+    assert processor.jpeg.startswith(b'\xff\xd8')
+    assert processor.stream_error is None
+    processor.close()
+
+
 def test_cache_has_raw_boxes_timestamps_and_video_fingerprint(video, cache):
     data = DetectionCache.model_validate_json(cache.read_text())
     assert data.video_sha256 == video_digest(video)
@@ -137,7 +220,7 @@ def test_offline_cache_runs_bytetrack_and_behavior_without_detector(video, cache
     result = processor.engine.snapshot()
     assert processor.mode == 'PRECOMPUTED_DEMO'
     assert result['summary']['upstream'] == 1
-    assert result['summary']['successful'] == 1
+    assert result['summary']['successful'] == 0
     assert result['summary']['tracks_produced'] == 1
     assert len(result['tracks'][0]['trajectory']) == 60
     assert processor.jpeg[:2] == b'\xff\xd8'

@@ -1,7 +1,7 @@
 export type Point = [number, number];
 export type Gate = [Point, Point];
 export type ViewMode = "live" | "trajectories" | "behavior";
-export type TrackFilter = "All" | "Successful" | "Reversals" | "Long dwell" | "Selected";
+export type TrackFilter = "All" | "Upstream" | "Downstream" | "Reversals" | "Long dwell" | "Selected";
 export interface Track {
   id: number;
   bbox: [number, number, number, number];
@@ -37,13 +37,18 @@ export interface Session {
   calibration_required?: boolean;
   width: number;
   height: number;
-  calibration?: { upstream: Point; gate: Gate };
+  calibration?: { upstream: Point; gate: Gate; entry_zone?: [number, number, number, number] | null; exit_zone?: [number, number, number, number] | null };
+  source_type: "live" | "stream" | "upload" | "preprocessed" | "simulated";
+  passage_calibrated: boolean;
+  reconnecting: boolean;
+  reconnect_attempts: number;
+  display_fps: number;
 }
 export interface Summary {
   upstream: number;
   downstream: number;
   active: number;
-  passage_rate: number;
+  passage_rate: number | null;
   successful: number;
   attempts: number;
   reversals: number;
@@ -79,7 +84,7 @@ export interface Snapshot {
   simulation_fish?: { bbox: [number, number, number, number]; confidence: number; heading: number }[];
 }
 export const EMPTY_SUMMARY: Summary = {
-  upstream: 0, downstream: 0, active: 0, passage_rate: 0, successful: 0,
+  upstream: 0, downstream: 0, active: 0, passage_rate: null, successful: 0,
   attempts: 0, reversals: 0, long_dwell: 0, success_rate: null,
   median_passage_seconds: null, elapsed_seconds: 0, tracks_produced: 0,
 };

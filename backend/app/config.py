@@ -10,11 +10,13 @@ class Settings(BaseSettings):
     fishial_model_path: str = 'models/fishial.pt'
     inference_device: str = 'auto'
     local_model_path: str = ''
-    default_stream_url: str = ''
+    default_stream_url: str = 'https://www.youtube.com/watch?v=tWFigWkp98o'
     default_demo_video_path: str = 'data/demo/salmon_demo.mp4'
     demo_detections_path: str = 'data/demo/detections.json'
     confidence_threshold: float = 0.35
     inference_sample_fps: float = 10.0
+    stream_reconnect_attempts: int = 8
+    passage_rate_min_seconds: float = 300.0
     reversal_threshold: float = 0.025
     dwell_threshold_seconds: float = 8.0
     track_history_length: int = 600

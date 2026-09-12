@@ -50,6 +50,7 @@ class BehaviorEngine:
         self.upstream = tuple(float(value) / length for value in upstream)
         self.gate = PassageGate(calibration.get('gate', [[0.62, 0.12], [0.62, 0.88]]), self.upstream)
         self.entry_zone, self.exit_zone = calibration.get('entry_zone'), calibration.get('exit_zone')
+        self.passage_calibrated = self.entry_zone is not None and self.exit_zone is not None
         self.sample_fps = max(1.0, float(sample_fps))
         self.reversal_threshold = max(0.005, reversal_threshold if reversal_threshold is not None else settings.reversal_threshold)
         self.dwell_threshold = max(0.5, dwell_threshold_seconds if dwell_threshold_seconds is not None else settings.dwell_threshold_seconds)
@@ -90,7 +91,7 @@ class BehaviorEngine:
 
     def _new_track(self, track_id, bbox, confidence):
         track = Track(track_id, list(bbox), float(confidence), self.timestamp, self.timestamp, self.history_length)
-        track.entered = in_zone(track.point, self.entry_zone)
+        track.entered = self.passage_calibrated and in_zone(track.point, self.entry_zone)
         self.tracks[track_id] = track
         self.crossing_states[track_id] = CrossingState()
         self.crossing_states[track_id].update(track.point, self.timestamp, self.gate)
@@ -159,7 +160,7 @@ class BehaviorEngine:
             previous, elapsed = track.move(bbox, confidence, timestamp, self.upstream)
             if elapsed <= 0:
                 continue
-            track.entered = track.entered or in_zone(track.point, self.entry_zone)
+            track.entered = track.entered or (self.passage_calibrated and in_zone(track.point, self.entry_zone))
             for key, seconds in residence_segments(previous, track.point, elapsed, self.heatmaps.columns, self.heatmaps.rows):
                 track.residence[key] = track.residence.get(key, 0.0) + seconds
                 self.heatmaps.density[key] += seconds
@@ -194,9 +195,7 @@ class BehaviorEngine:
                 if crossing['direction'] == 'upstream':
                     if attempt_state.crossing_attempt():
                         self._attempt(track)
-                    if track.entered and self.exit_zone is None:
-                        self._success(track)
-            if self.exit_zone is not None and track.entered and track.direction == 'upstream' and in_zone(track.point, self.exit_zone):
+            if self.passage_calibrated and track.entered and track.direction == 'upstream' and in_zone(track.point, self.exit_zone):
                 self._success(track)
         # Cap live state too, so a busy or pathological feed cannot grow forever.
         if len(self.tracks) > 200:
@@ -232,7 +231,10 @@ class BehaviorEngine:
         resolved = self.completed_count + sum(track.passage_seconds is not None for track in self.tracks.values())
         summary = {
             **self.counts, 'active': len(self.tracks),
-            'passage_rate': round(self.counts['upstream'] / elapsed * 3600, 1) if elapsed > 0 else 0.0,
+            # Very short extrapolations are misleading (one fish in 30 seconds is
+            # not evidence of a stable 120 fish/hour rate).
+            'passage_rate': round(self.counts['upstream'] / elapsed * 3600, 1)
+            if elapsed >= settings.passage_rate_min_seconds else None,
             'success_rate': round(self.counts['successful'] / resolved * 100, 1) if resolved else None,
             'median_passage_seconds': round(median(self.passage_times), 2) if self.passage_times else None,
             'elapsed_seconds': round(elapsed, 3),

@@ -9,3 +9,4 @@ torch>=2.6,<3
 ultralytics>=8.4,<9
 pytest>=8,<10
 httpx>=0.28,<1
+yt-dlp>=2026.8.12

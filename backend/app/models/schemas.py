@@ -9,6 +9,10 @@ class SessionCreate(BaseModel):
     source: Literal['demo', 'visualization'] = 'demo'
 
 
+class URLSource(BaseModel):
+    url: str = Field(min_length=8, max_length=4096)
+
+
 class Calibration(BaseModel):
     upstream: Point = (1., 0.)
     gate: tuple[Point, Point] = ((0.65, 0.12), (0.65, 0.88))
@@ -92,6 +96,11 @@ class SourceState(BaseModel):
     duration: float | None
     calibration_required: bool
     calibration: Calibration
+    source_type: Literal['live', 'stream', 'upload', 'preprocessed', 'simulated']
+    passage_calibrated: bool
+    reconnecting: bool = False
+    reconnect_attempts: int = 0
+    display_fps: float = 0
 
 
 class Crossing(BaseModel):
@@ -133,7 +142,7 @@ class PassageSummary(BaseModel):
     long_dwell: int
     tracks_produced: int
     active: int
-    passage_rate: float
+    passage_rate: float | None
     success_rate: float | None
     median_passage_seconds: float | None
     elapsed_seconds: float

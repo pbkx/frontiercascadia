@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SalmonSight — Every journey, in sight.",
-  description: "Computer vision for understanding salmon passage behavior. Follow individual journeys, reveal movement patterns, and observe what happens beneath the surface.",
+  title: "SalmonSight — Live fish tracking",
+  description: "Local fish detection, persistent tracks, trajectories, crossings, and behavior overlays on live or uploaded video.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

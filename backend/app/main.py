@@ -7,9 +7,9 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from .config import ROOT, settings
-from .models.schemas import SessionCreate, Calibration, Snapshot, TrackRecord, PassageEvent, PassageSummary
+from .models.schemas import SessionCreate, URLSource, Calibration, Snapshot, TrackRecord, PassageEvent, PassageSummary
 from .services.sessions import Session, sessions
-from .video.sources import discover_demo
+from .video.sources import discover_demo, resolve_stream
 
 
 @asynccontextmanager
@@ -52,11 +52,13 @@ async def create_session(body: SessionCreate = SessionCreate()):
         sessions.pop(oldest.id, None)
     try:
         session = await asyncio.to_thread(Session, body.source)
-    except (ValueError, OSError):
-        # Broken default asset still leaves a clearly labeled runnable simulation.
-        session = await asyncio.to_thread(Session, 'visualization')
-        session.processor.warning = 'Configured demo video could not be opened. Showing an illustrative simulation.'
+    except (ValueError, OSError) as exc:
+        message = str(exc) if str(exc) else 'Unable to connect to this stream. Try again or choose another source.'
+        raise HTTPException(422, message) from None
     sessions[session.id] = session
+    await session.start_display()
+    if body.source == 'demo':
+        await session.start()
     return session.snapshot()
 
 
@@ -112,16 +114,12 @@ async def upload(session_id: str, file: UploadFile = File(...)):
                     raise HTTPException(413, 'Video exceeds the 1 GB local upload limit.')
                 dest.write(chunk)
         async with session.lock:
-            await session.stop()
-            # Validate and initialize before replacing the working source.
-            from .video.processor import VideoProcessor
-            processor = await asyncio.to_thread(VideoProcessor, path, None, session.calibration.model_dump())
-            session.processor.close()
-            session.video, session.cache = path, None
-            session.display_name = Path(file.filename or 'Uploaded footage').name
-            session.processor = processor
-            session.calibration_required = True
-            session.processing_fps = 0.
+            await session.replace_source(
+                path,
+                display_name=Path(file.filename or 'Uploaded footage').name,
+                source_type='upload',
+                calibration_required=True,
+            )
         return session.snapshot()
     except (ValueError, OSError) as exc:
         path.unlink(missing_ok=True)
@@ -131,6 +129,23 @@ async def upload(session_id: str, file: UploadFile = File(...)):
         raise
     finally:
         await file.close()
+
+
+@app.post('/api/sessions/{session_id}/source/url', response_model=Snapshot)
+async def connect_url(session_id: str, body: URLSource):
+    session = get_session(session_id)
+    try:
+        source = await asyncio.to_thread(resolve_stream, body.url)
+        async with session.lock:
+            await session.replace_source(
+                source,
+                display_name=source.display_name,
+                source_type='live' if source.is_live else 'stream',
+                calibration_required=True,
+            )
+        return session.snapshot()
+    except (ValueError, OSError):
+        raise HTTPException(422, 'Unable to connect to this stream. Try again or choose another source.') from None
 
 
 @app.get('/api/sessions/{session_id}/summary', response_model=PassageSummary)
@@ -177,7 +192,9 @@ async def video_frames(session_id: str):
             if current and current is not previous:
                 previous = current
                 yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + current + b'\r\n'
-            await asyncio.sleep(1 / session.processor.sample_fps)
+            # Display cadence is independent of detector cadence. The endpoint
+            # only publishes the newest JPEG and never buffers historical frames.
+            await asyncio.sleep(1 / 60)
 
     return StreamingResponse(frames(), media_type='multipart/x-mixed-replace; boundary=frame', headers={'Cache-Control': 'no-store'})
 

@@ -192,3 +192,5 @@ watchfiles==1.2.0
     # via uvicorn
 websockets==17.1
     # via uvicorn
+yt-dlp==2026.8.19
+    # via -r backend/requirements.txt

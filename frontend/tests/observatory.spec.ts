@@ -1,57 +1,61 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
 import { test, expect } from '@playwright/test';
 
-test('offline visualization follows fish through passage, trajectories and behavior', async ({ page }) => {
+const fixture = path.resolve('test-results/local-video-fixture.avi');
+
+test.beforeAll(() => {
+  mkdirSync(path.dirname(fixture), { recursive: true });
+  const python = path.resolve('../.venv/bin/python');
+  execFileSync(python, ['-c', [
+    'import cv2, numpy as np, sys',
+    'w=cv2.VideoWriter(sys.argv[1], cv2.VideoWriter_fourcc(*"MJPG"), 15, (640,360))',
+    'assert w.isOpened()',
+    '[(w.write(cv2.putText(np.full((360,640,3), 25+i%30, np.uint8), "LOCAL VIDEO FIXTURE", (125,180), cv2.FONT_HERSHEY_SIMPLEX, .8, (190,220,210), 2))) for i in range(150)]',
+    'w.release()',
+  ].join(';'), fixture]);
+});
+
+test('opens video-first and analyzes a real local video fixture', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.route('**/*', route => {
-    const hostname = new URL(route.request().url()).hostname;
-    return ['localhost', '127.0.0.1'].includes(hostname) ? route.continue() : route.abort();
-  });
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'START ANALYSIS', exact: false })).toBeEnabled();
-  await expect(page.getByText('SIMULATED DATA', { exact: true })).toBeVisible();
-  const canvas = page.locator('.cv-canvas');
-  const box = await canvas.boundingBox();
-  expect(box?.width).toBe(1440);
-  expect(box?.height).toBe(900);
-  await page.screenshot({ path: 'test-results/observatory.png' });
-  await page.getByRole('button', { name: 'START ANALYSIS', exact: false }).click();
-  await expect(page.getByRole('button', { name: 'PAUSE ANALYSIS' })).toBeVisible();
-  await expect.poll(async () => page.locator('.big-stat').innerText(), { timeout: 25_000 }).not.toMatch(/^00/);
-  await expect.poll(async () => page.locator('.behavior-grid > div').first().innerText(), { timeout: 25_000 }).not.toMatch(/Reversals\s*00/);
-  await page.getByRole('button', { name: 'Trajectories', exact: true }).click();
-  await page.getByRole('button', { name: 'Reversals', exact: true }).click();
-  await expect(page.locator('.trajectory-filters button.active')).toHaveText('Reversals');
-  await page.screenshot({ path: 'test-results/trajectories.png' });
-  await expect(page.locator('.activity-event').first()).toBeVisible();
-  await page.locator('.activity-event').first().click();
-  await expect(page.locator('.selected-panel')).toBeVisible();
-  await expect(page.locator('.selected-panel')).toContainText('Passage attempts');
-  await page.getByRole('button', { name: 'Close fish details' }).click();
-  await page.getByRole('button', { name: 'Behavior', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Behavior friction' })).toBeVisible();
-  await expect(page.locator('.hotspot-callout')).toBeVisible({ timeout: 25_000 });
-  await page.screenshot({ path: 'test-results/behavior.png' });
-  await page.getByRole('button', { name: 'Movement density' }).click();
-  await expect(page.locator('.heatmap-switch button.active')).toContainText('Movement density');
-  await page.getByRole('button', { name: 'PAUSE ANALYSIS' }).click();
-  await expect(page.getByRole('button', { name: 'RESUME ANALYSIS' })).toBeVisible();
+
+  await expect(page.getByText('SALMONSIGHT', { exact: true })).toBeVisible();
+  await expect(page.getByText('Issaquah SalmonCam', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('.video-layer')).toBeVisible();
+  await expect(page.getByText('Every journey, in sight.')).toHaveCount(0);
+  await expect(page.getByText('A river, reimagined.')).toHaveCount(0);
+  const overlay = page.locator('.cv-canvas');
+  const video = page.locator('.video-layer');
+  await expect(overlay).toHaveCSS('width', await video.evaluate(element => `${element.getBoundingClientRect().width}px`));
+
+  await page.getByRole('button', { name: 'Change source' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByLabel('YouTube / stream URL')).toBeVisible();
+  await page.locator('input[type=file]').setInputFiles(fixture);
+  await expect(page.getByRole('complementary', { name: 'Calibration settings' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText('UPLOADED VIDEO', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Upstream left' }).click();
+  await page.getByRole('button', { name: 'Save calibration' }).click();
+  await expect(page.getByRole('button', { name: 'Pause analysis' })).toBeVisible({ timeout: 30_000 });
+
+  await page.getByRole('button', { name: 'trajectories', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'Trajectory filters' })).toBeVisible();
+  await page.getByRole('button', { name: 'Upstream', exact: true }).click();
+  await page.getByRole('button', { name: 'behavior', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Movement density' })).toBeVisible();
+  await page.getByRole('button', { name: 'Reversal / dwell hotspot' }).click();
   expect(errors).toEqual([]);
 });
 
-test('source chooser, science, calibration and narrow viewport remain usable', async ({ page }) => {
+test('source controls and overlays remain usable on a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'START ANALYSIS', exact: false })).toBeEnabled();
-  await expect(page.locator('.view-switch')).toBeVisible();
-  await page.screenshot({ path: 'test-results/mobile.png', fullPage: true });
-  await page.getByRole('button', { name: 'Open analysis settings' }).click();
-  await page.getByRole('button', { name: 'Upstream left' }).click();
-  await page.getByRole('button', { name: 'SAVE CALIBRATION' }).click();
-  await expect(page.locator('.settings-panel')).not.toBeVisible();
-  await page.getByRole('button', { name: 'ANALYZE YOUR FOOTAGE', exact: true }).click();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'TRY ISSAQUAH DEMO' })).toBeVisible();
-  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(page.locator('.cv-canvas')).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Main modes' })).toBeVisible();
+  await page.getByRole('button', { name: 'Open calibration settings' }).click();
+  await expect(page.getByRole('complementary', { name: 'Calibration settings' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

@@ -69,7 +69,7 @@ def test_gate_counts_once_and_ignores_hovering_jitter():
     snapshot = follow(engine, positions)
     assert snapshot['summary']['upstream'] == 1
     assert snapshot['summary']['downstream'] == 0
-    assert snapshot['summary']['successful'] == 1
+    assert snapshot['summary']['successful'] == 0
     assert len(snapshot['tracks'][0]['gate_crossings']) == 1
 
 
@@ -84,7 +84,7 @@ def test_clearance_and_return_permit_genuine_new_crossings():
     snapshot = follow(BehaviorEngine(), positions)
     assert snapshot['summary']['upstream'] == 2
     assert snapshot['summary']['downstream'] == 1
-    assert snapshot['summary']['successful'] == 1
+    assert snapshot['summary']['successful'] == 0
     assert snapshot['tracks'][0]['attempts'] == 2
     assert 'MULTIPLE_ATTEMPTS' in snapshot['tracks'][0]['flags']
 
@@ -152,7 +152,7 @@ def test_dwell_uses_seconds_and_generates_measured_heatmap(fps):
 
 
 def test_baseline_requires_three_measured_normal_successes():
-    engine = BehaviorEngine()
+    engine = BehaviorEngine({'entry_zone': [.1, .2, .3, .8], 'exit_zone': [.7, .2, .9, .8]})
     for frame, x in enumerate(np.linspace(0.2, 0.75, 70)):
         engine.update([fish(float(x), y, index + 1) for index, y in enumerate([0.31, 0.51])], frame / 10)
     assert engine.counts['successful'] == 2
