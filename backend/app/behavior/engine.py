@@ -48,7 +48,7 @@ class BehaviorEngine:
         if not math.isfinite(length) or length < 0.1:
             raise ValueError('Upstream must be a nonzero direction vector.')
         self.upstream = tuple(float(value) / length for value in upstream)
-        self.gate = PassageGate(calibration.get('gate', [[0.62, 0.12], [0.62, 0.88]]), self.upstream)
+        self.gate = PassageGate(calibration.get('gate', [[0.65, 0.26], [0.65, 0.74]]), self.upstream)
         self.entry_zone, self.exit_zone = calibration.get('entry_zone'), calibration.get('exit_zone')
         self.passage_calibrated = self.entry_zone is not None and self.exit_zone is not None
         self.sample_fps = max(1.0, float(sample_fps))

@@ -44,7 +44,7 @@ class VideoProcessor:
             except DetectorUnavailable as exc:
                 # Video remains available even when local inference is not.
                 self.detector_error = str(exc)
-        self.tracker = Tracker(sample_fps=self.sample_fps)
+        self.tracker = Tracker(sample_fps=self.sample_fps, detection_threshold=settings.confidence_threshold)
         self.engine = BehaviorEngine(calibration=calibration, sample_fps=self.sample_fps)
         self.analytics_lock = RLock()
         self.frame_lock = RLock()

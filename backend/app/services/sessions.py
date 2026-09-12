@@ -133,10 +133,17 @@ class Session:
         else:
             source_name = self.display_name or (self.video.display_name if isinstance(self.video, StreamSource) else 'Video stream')
             label = 'LIVE' if self.source_type == 'live' else 'VIDEO STREAM'
+        if isinstance(self.video, StreamSource):
+            source_origin = self.video.original_url
+        elif isinstance(self.video, Path):
+            source_origin = self.display_name or self.video.name
+        else:
+            source_origin = source_name
         reader = p.reader
         passage_calibrated = self.calibration.entry_zone is not None and self.calibration.exit_zone is not None
         state = {
-            'id': self.id, 'mode': p.mode, 'label': label, 'source_name': source_name,
+            'id': self.id, 'mode': p.mode, 'label': label,
+            'source_name': source_name, 'source_origin': source_origin,
             'running': self.running, 'completed': p.completed, 'error': p.error or p.warning,
             'detector_state': 'MODEL UNAVAILABLE' if p.detector_error else ('CACHED FISHIAL' if p.cache else ('ILLUSTRATIVE' if not self.video else 'LOCAL ' + settings.detector_backend.upper())),
             'video_url': f'/api/sessions/{self.id}/video' if self.video else None,
@@ -147,6 +154,7 @@ class Session:
             'source_type': self.source_type, 'passage_calibrated': passage_calibrated,
             'reconnecting': p.reconnecting, 'reconnect_attempts': p.reconnect_attempts,
             'display_fps': round(p.display_fps, 1),
+            'stream_active': self.source_type == 'live' and p.jpeg is not None and not p.reconnecting and not p.stream_error and not p.source_ended,
         }
         return {'session': state, 'frame': p.frame, 'timestamp': p.timestamp, 'processing_fps': round(self.processing_fps, 1), **analytics, 'simulation_fish': p.simulation_fish}
 

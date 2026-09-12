@@ -34,6 +34,13 @@ def test_bytetrack_preserves_ids_through_motion_and_short_missing_observation():
     assert len(set(observed_ids)) == 1
 
 
+def test_bytetrack_can_start_a_track_at_the_configured_low_confidence_threshold():
+    tracker = Tracker(detection_threshold=0.20)
+    tracks = tracker.update([Detection(0.2, 0.4, 0.5, 0.55, 0.21)], 0)
+    assert len(tracks) == 1
+    assert tracks[0].confidence == pytest.approx(0.21)
+
+
 def test_bytetrack_keeps_independent_fish_and_rejects_invalid_boxes():
     tracker = Tracker()
     for frame in range(12):
@@ -65,7 +72,7 @@ def test_direction_uses_calibrated_smoothed_motion(upstream, start, end, expecte
 
 def test_gate_counts_once_and_ignores_hovering_jitter():
     engine = BehaviorEngine()
-    positions = list(np.linspace(0.3, 0.639, 40)) + [0.617, 0.626, 0.615, 0.624] * 20
+    positions = list(np.linspace(0.3, 0.669, 40)) + [0.647, 0.656, 0.645, 0.654] * 20
     snapshot = follow(engine, positions)
     assert snapshot['summary']['upstream'] == 1
     assert snapshot['summary']['downstream'] == 0

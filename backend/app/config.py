@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     default_stream_url: str = 'https://www.youtube.com/watch?v=tWFigWkp98o'
     default_demo_video_path: str = 'data/demo/salmon_demo.mp4'
     demo_detections_path: str = 'data/demo/detections.json'
-    confidence_threshold: float = 0.35
+    confidence_threshold: float = 0.20
     inference_sample_fps: float = 10.0
     stream_reconnect_attempts: int = 8
     passage_rate_min_seconds: float = 300.0

@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Crosshair,
-  Fish, LoaderCircle, Pause, Play, Radio, Settings2,
-  Upload, Wifi, WifiOff, X,
+  LoaderCircle, Pause, Play, Radio, Settings2, Upload, WifiOff, X,
 } from "lucide-react";
 import ObservationCanvas from "@/components/ObservationCanvas";
 import { api, backendUrl } from "@/lib/api";
@@ -31,7 +30,6 @@ function defaultZones(direction: Point) {
 export default function SalmonSight() {
   const [packet, setPacket] = useState<Snapshot | null>(null);
   const [tracks, setTracks] = useState<Track[]>([]);
-  const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,11 +122,8 @@ export default function SalmonSight() {
     const connect = () => {
       if (disposed) return;
       socket = new WebSocket(`${backendUrl().replace(/^http/, "ws")}/ws/sessions/${session.id}`);
-      socket.onopen = () => setConnected(true);
       socket.onmessage = event => { try { acceptPacket(JSON.parse(event.data)); } catch { /* retain last valid state */ } };
-      socket.onerror = () => setConnected(false);
       socket.onclose = () => {
-        setConnected(false);
         if (!disposed) retry = setTimeout(connect, 2000);
       };
     };
@@ -210,12 +205,17 @@ export default function SalmonSight() {
   };
 
   const videoUrl = session?.video_url ? `${session.video_url.startsWith("http") ? "" : backendUrl()}${session.video_url}` : null;
-  const stateText = session?.reconnecting ? "RECONNECTING" : session?.label || (connecting ? "CONNECTING" : "NO SOURCE");
+  const stateText = session?.reconnecting ? "RECONNECTING" : session?.label || "NO SOURCE";
+  const isActivelyLive = session?.source_type === "live" && session.stream_active;
 
   return <main className={`app mode-${mode}`}>
     <div className="video-stage">
       {videoUrl && <img className="video-layer" src={videoUrl} alt="Current fish camera video" /> /* eslint-disable-line @next/next/no-img-element */}
-      {!videoUrl && <div className="video-empty"><Radio size={26} /><span>{connecting ? "Connecting to Issaquah SalmonCam…" : "Video source unavailable"}</span><small>Choose another source to continue.</small></div>}
+      {!videoUrl && <div className="video-empty">
+        {connecting
+          ? <div className="video-loading" role="status" aria-label="Loading video"><LoaderCircle className="spin video-loader" size={30} /></div>
+          : <><Radio size={26} /><span>Video source unavailable</span><small>Choose another source to continue.</small></>}
+      </div>}
     </div>
     <div className="video-dim" />
     <ObservationCanvas
@@ -224,9 +224,14 @@ export default function SalmonSight() {
       onGateChange={setGate} showBoxes={boxes} showTrails={trails}
     />
 
-    <header className="topbar glass">
-      <div className="identity"><Fish size={21} /><strong>SALMONSIGHT</strong><span>{session?.source_name || "Issaquah SalmonCam"}</span></div>
-      <div className="source-state"><i className={session?.running ? "pulse" : ""} /><strong>{stateText}</strong><span>{(packet?.processing_fps || 0).toFixed(1)} detector FPS</span><span className="connection" title={connected ? "Backend connected" : "Backend disconnected"}>{connected ? <Wifi size={14} /> : <WifiOff size={14} />}</span></div>
+    <header className="topbar">
+      {session && <div className="source-origin" title={session.source_origin}>{session.source_origin}</div>}
+      {session && <div className="source-state">
+        {isActivelyLive
+          ? <strong className="live-status"><i aria-hidden="true" />LIVE</strong>
+          : <strong>{session.source_type === "live" && !session.reconnecting ? "OFFLINE" : stateText}</strong>}
+        <span>{(packet?.processing_fps || 0).toFixed(1)} FPS</span>
+      </div>}
     </header>
 
     {mode === "trajectories" && <div className="mode-tools glass" role="group" aria-label="Trajectory filters">
@@ -252,7 +257,7 @@ export default function SalmonSight() {
 
     {selectedTrack && <aside className="track-panel glass" aria-label={`Fish ${selectedTrack.id} details`}>
       <button aria-label="Close fish details" onClick={() => setSelected(null)}><X size={14} /></button>
-      <strong>FISH #{selectedTrack.id}</strong><span>{Math.round(selectedTrack.confidence * 100)}%</span>
+      <strong>Fish #{selectedTrack.id}</strong><span>{selectedTrack.confidence.toFixed(2)}</span>
       <dl><div><dt>Direction</dt><dd>{selectedTrack.direction}</dd></div><div><dt>Dwell time</dt><dd>{selectedTrack.dwell_time.toFixed(1)}s</dd></div><div><dt>Reversals</dt><dd>{selectedTrack.reversals}</dd></div><div><dt>Observed</dt><dd>{selectedTrack.time_observed.toFixed(1)}s</dd></div></dl>
     </aside>}
 

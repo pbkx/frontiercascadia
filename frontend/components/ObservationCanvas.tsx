@@ -20,6 +20,7 @@ interface Props {
 
 const TRACK = "#80f5c7";
 const ALERT = "#ffba72";
+const APPLE_FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif';
 
 function visible(track: Track, filter: TrackFilter, selected: number | null) {
   return filter === "All" ||
@@ -106,14 +107,16 @@ export default function ObservationCanvas(props: Props) {
         ctx.setLineDash([6, 6]);
         ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = "rgba(5,12,15,.72)";
-        const gx = (a[0] + b[0]) / 2;
-        const gy = (a[1] + b[1]) / 2;
-        ctx.fillRect(gx - 48, gy - 10, 96, 20);
-        ctx.fillStyle = "rgba(255,255,255,.82)";
-        ctx.font = "10px ui-monospace, monospace";
-        ctx.textAlign = "center";
-        ctx.fillText(p.calibrating ? "DRAG ENDPOINTS" : "COUNTING LINE", gx, gy + 4);
+        if (p.calibrating) {
+          const gx = (a[0] + b[0]) / 2;
+          const gy = (a[1] + b[1]) / 2;
+          ctx.fillStyle = "rgba(5,12,15,.72)";
+          ctx.fillRect(gx - 48, gy - 10, 96, 20);
+          ctx.fillStyle = "rgba(255,255,255,.82)";
+          ctx.font = `500 10px ${APPLE_FONT}`;
+          ctx.textAlign = "center";
+          ctx.fillText("DRAG ENDPOINTS", gx, gy + 4);
+        }
         for (const endpoint of [a, b]) {
           ctx.fillStyle = p.calibrating ? "white" : "rgba(255,255,255,.7)";
           ctx.beginPath(); ctx.arc(endpoint[0], endpoint[1], p.calibrating ? 7 : 3, 0, Math.PI * 2); ctx.fill();
@@ -153,15 +156,15 @@ export default function ObservationCanvas(props: Props) {
           ctx.strokeStyle = color;
           ctx.lineWidth = selected ? 2.2 : 1.5;
           ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-          ctx.fillStyle = "rgba(3,10,13,.78)";
+          ctx.fillStyle = "rgba(22,22,24,.86)";
           ctx.fillRect(x1, labelY, 142, 24);
-          ctx.font = "600 11px ui-monospace, monospace";
+          ctx.font = `600 11px ${APPLE_FONT}`;
           ctx.textAlign = "left";
           ctx.fillStyle = "white";
-          ctx.fillText(`FISH #${track.id}`, x1 + 7, labelY + 16);
+          ctx.fillText(`Fish #${track.id}`, x1 + 7, labelY + 16);
           ctx.textAlign = "right";
           ctx.fillStyle = color;
-          ctx.fillText(`${Math.round(track.confidence * 100)}%`, x1 + 135, labelY + 16);
+          ctx.fillText(track.confidence.toFixed(2), x1 + 135, labelY + 16);
 
           if (track.direction !== "uncertain" && track.smoothed_velocity) {
             const magnitude = Math.hypot(...track.smoothed_velocity) || 1;
@@ -175,7 +178,7 @@ export default function ObservationCanvas(props: Props) {
             ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(endX, endY);
             ctx.lineTo(endX - dx * 7 - dy * 4, endY - dy * 7 + dx * 4);
             ctx.moveTo(endX, endY); ctx.lineTo(endX - dx * 7 + dy * 4, endY - dy * 7 - dx * 4); ctx.stroke();
-            ctx.font = "10px ui-monospace, monospace";
+            ctx.font = `500 10px ${APPLE_FONT}`;
             ctx.textAlign = "center";
             ctx.fillText(track.direction, (x1 + x2) / 2, y2 + 36);
           }

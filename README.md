@@ -77,7 +77,7 @@ All movement measurements are image-space observations. Counts can be affected b
 DETECTOR_BACKEND=fishial
 FISHIAL_MODEL_PATH=models/fishial.pt
 INFERENCE_DEVICE=auto
-CONFIDENCE_THRESHOLD=0.35
+CONFIDENCE_THRESHOLD=0.20
 INFERENCE_SAMPLE_FPS=10
 DEFAULT_STREAM_URL=https://www.youtube.com/watch?v=tWFigWkp98o
 STREAM_RECONNECT_ATTEMPTS=8

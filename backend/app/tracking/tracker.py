@@ -26,10 +26,14 @@ class Tracker:
 
     _SCALE = 1000.0
 
-    def __init__(self, sample_fps: float = 10):
+    def __init__(self, sample_fps: float = 10, detection_threshold: float = 0.20):
         self.sample_fps = max(1.0, float(sample_fps))
+        # supervision requires a new track to exceed activation threshold + .1.
+        # Offset that internal margin so detections accepted by Fishial at the
+        # configured cutoff are also eligible to become persistent tracks.
+        activation_threshold = max(0.0, min(0.9, float(detection_threshold) - 0.1))
         self._tracker = sv.ByteTrack(
-            track_activation_threshold=0.35,
+            track_activation_threshold=activation_threshold,
             lost_track_buffer=45,
             minimum_matching_threshold=0.8,
             frame_rate=max(1, round(self.sample_fps)),

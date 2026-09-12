@@ -22,9 +22,11 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
 
-  await expect(page.getByText('SALMONSIGHT', { exact: true })).toBeVisible();
-  await expect(page.getByText('Issaquah SalmonCam', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText('https://www.youtube.com/watch?v=tWFigWkp98o', { exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.video-layer')).toBeVisible();
+  await expect(page.locator('.live-status')).toHaveText('LIVE');
+  await expect(page.locator('.live-status')).toHaveCSS('color', 'rgb(255, 69, 58)');
+  await expect(page.locator('.live-status i')).toHaveCSS('animation-name', 'live-blink');
   await expect(page.getByText('Every journey, in sight.')).toHaveCount(0);
   await expect(page.getByText('A river, reimagined.')).toHaveCount(0);
   const overlay = page.locator('.cv-canvas');
@@ -37,6 +39,7 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
   await page.locator('input[type=file]').setInputFiles(fixture);
   await expect(page.getByRole('complementary', { name: 'Calibration settings' })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText('UPLOADED VIDEO', { exact: true })).toBeVisible();
+  await expect(page.locator('.live-status')).toHaveCount(0);
   await page.getByRole('button', { name: 'Upstream left' }).click();
   await page.getByRole('button', { name: 'Save calibration' }).click();
   await expect(page.getByRole('button', { name: 'Pause analysis' })).toBeVisible({ timeout: 30_000 });

@@ -26,6 +26,7 @@ export interface Session {
   mode: "LIVE_INFERENCE" | "PRECOMPUTED_DEMO" | "VISUALIZATION_DEMO";
   label: string;
   source_name: string;
+  source_origin: string;
   running: boolean;
   completed: boolean;
   error: string | null;
@@ -43,6 +44,7 @@ export interface Session {
   reconnecting: boolean;
   reconnect_attempts: number;
   display_fps: number;
+  stream_active: boolean;
 }
 export interface Summary {
   upstream: number;
@@ -88,4 +90,4 @@ export const EMPTY_SUMMARY: Summary = {
   attempts: 0, reversals: 0, long_dwell: 0, success_rate: null,
   median_passage_seconds: null, elapsed_seconds: 0, tracks_produced: 0,
 };
-export const DEFAULT_GATE: Gate = [[0.64, 0.18], [0.64, 0.84]];
+export const DEFAULT_GATE: Gate = [[0.65, 0.26], [0.65, 0.74]];

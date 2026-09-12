@@ -15,7 +15,7 @@ class URLSource(BaseModel):
 
 class Calibration(BaseModel):
     upstream: Point = (1., 0.)
-    gate: tuple[Point, Point] = ((0.65, 0.12), (0.65, 0.88))
+    gate: tuple[Point, Point] = ((0.65, 0.26), (0.65, 0.74))
     entry_zone: tuple[float, float, float, float] | None = None
     exit_zone: tuple[float, float, float, float] | None = None
 
@@ -61,7 +61,7 @@ class DetectionCache(BaseModel):
     provenance: Literal['fishial_local', 'local_yolo']
     model_id: str
     model_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
-    confidence_threshold: float = Field(default=.35, ge=0, le=1)
+    confidence_threshold: float = Field(default=.20, ge=0, le=1)
     video: str
     video_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
     fps: float = Field(gt=0, allow_inf_nan=False)
@@ -85,6 +85,7 @@ class SourceState(BaseModel):
     mode: Literal['LIVE_INFERENCE', 'PRECOMPUTED_DEMO', 'VISUALIZATION_DEMO']
     label: str
     source_name: str
+    source_origin: str
     running: bool
     completed: bool
     error: str | None
@@ -101,6 +102,7 @@ class SourceState(BaseModel):
     reconnecting: bool = False
     reconnect_attempts: int = 0
     display_fps: float = 0
+    stream_active: bool = False
 
 
 class Crossing(BaseModel):
