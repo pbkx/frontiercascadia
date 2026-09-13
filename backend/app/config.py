@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     stream_reconnect_attempts: int = 8
     stream_open_timeout_ms: int = 10000
     stream_read_timeout_ms: int = 5000
+    live_buffer_seconds: float = 60.0
+    live_buffer_max_megabytes: float = 128.0
     abandoned_session_seconds: float = 30.0
     passage_rate_min_seconds: float = 300.0
     reversal_threshold: float = 0.025

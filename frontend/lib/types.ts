@@ -49,6 +49,11 @@ export interface Session {
   seekable: boolean;
   playback_paused: boolean;
   playback_position: number;
+  playback_start: number;
+  playback_end: number;
+  at_live_edge: boolean;
+  live_buffer_seconds: number;
+  replaying: boolean;
   analysis_generation: number;
 }
 export interface Summary {
@@ -71,6 +76,7 @@ export interface PassageEvent {
   track_id: number;
   display_track_id?: number;
   timestamp: number;
+  media_timestamp?: number | null;
   position: Point;
   message: string;
 }

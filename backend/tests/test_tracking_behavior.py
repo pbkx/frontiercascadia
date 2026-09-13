@@ -131,6 +131,8 @@ def test_approach_retreat_and_reapproach_create_two_attempts_without_pass():
     assert snapshot['summary']['attempts'] == 2
     assert snapshot['summary']['successful'] == 0
     assert snapshot['summary']['upstream'] == 0
+    assert any(event['type'] == 'REPEATED_APPROACH' for event in snapshot['events'])
+    assert all('media_timestamp' in event for event in snapshot['events'])
 
 
 def test_trajectory_history_bounded_without_losing_total_observed_time():

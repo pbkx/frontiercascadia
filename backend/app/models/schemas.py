@@ -110,6 +110,11 @@ class SourceState(BaseModel):
     seekable: bool = False
     playback_paused: bool = False
     playback_position: float = 0
+    playback_start: float = 0
+    playback_end: float = 0
+    at_live_edge: bool = True
+    live_buffer_seconds: float = 0
+    replaying: bool = False
     analysis_generation: int = 0
 
 
@@ -161,10 +166,11 @@ class PassageSummary(BaseModel):
 
 class PassageEvent(BaseModel):
     id: int
-    type: Literal['TRACK_STARTED', 'TRACK_ENDED', 'UPSTREAM_CROSSING', 'DOWNSTREAM_CROSSING', 'PASSAGE_ATTEMPT', 'PASSAGE_SUCCESS', 'REVERSAL', 'LONG_DWELL', 'CONGESTION']
+    type: Literal['TRACK_STARTED', 'TRACK_ENDED', 'UPSTREAM_CROSSING', 'DOWNSTREAM_CROSSING', 'PASSAGE_ATTEMPT', 'REPEATED_APPROACH', 'PASSAGE_SUCCESS', 'REVERSAL', 'LONG_DWELL', 'CONGESTION']
     track_id: int
     display_track_id: int
     timestamp: float
+    media_timestamp: float | None = None
     position: Point
     message: str
 

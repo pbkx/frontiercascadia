@@ -8,6 +8,7 @@ from statistics import median
 
 
 RANGES = {'5m': 300., '15m': 900., '1h': 3600., 'all': None, 'full': None}
+INSPECTION_EVENTS = {'REVERSAL', 'UPSTREAM_CROSSING', 'DOWNSTREAM_CROSSING', 'LONG_DWELL', 'REPEATED_APPROACH', 'CONGESTION'}
 
 
 def percentile(values: list[float], fraction: float) -> float | None:
@@ -133,7 +134,7 @@ def build_analytics(snapshot: dict, selected_range: str = 'all') -> dict:
         elif ratio <= .8:
             findings.append(f"Tracks without reversals remained visible {1 / ratio:.1f}× longer than reversal tracks.")
     if summary['median_relative_speed'] is not None and len(findings) < 5:
-        findings.append(f"Median relative movement speed was {summary['median_relative_speed']:.3f} frame widths per second.")
+        findings.append(f"Median relative movement speed was {summary['median_relative_speed']:.3f}.")
 
     rows = []
     for track in tracks:
@@ -173,4 +174,5 @@ def build_analytics(snapshot: dict, selected_range: str = 'all') -> dict:
             for track in tracks if float(track.get('velocity') or 0) > 0 and float(track.get('time_observed') or 0) > 0
         ],
         'tracks': rows,
+        'events': [event for event in reversed(events) if event.get('type') in INSPECTION_EVENTS],
     }

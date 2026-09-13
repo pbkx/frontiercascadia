@@ -20,11 +20,11 @@ def analytics_snapshot():
         track(4, 550, 590, 'uncertain', .05, .5, 1),
     ]
     events = [
-        {'type': 'UPSTREAM_CROSSING', 'timestamp': 17},
-        {'type': 'DOWNSTREAM_CROSSING', 'timestamp': 114},
-        {'type': 'REVERSAL', 'timestamp': 108},
-        {'type': 'LONG_DWELL', 'timestamp': 112},
-        {'type': 'REVERSAL', 'timestamp': 570},
+        {'id': 1, 'type': 'UPSTREAM_CROSSING', 'timestamp': 17, 'track_id': 1},
+        {'id': 2, 'type': 'DOWNSTREAM_CROSSING', 'timestamp': 114, 'track_id': 3},
+        {'id': 3, 'type': 'REVERSAL', 'timestamp': 108, 'track_id': 3},
+        {'id': 4, 'type': 'LONG_DWELL', 'timestamp': 112, 'track_id': 3},
+        {'id': 5, 'type': 'REVERSAL', 'timestamp': 570, 'track_id': 4, 'media_timestamp': 42},
     ]
     return {
         'session': {'id': 'test', 'source_type': 'upload', 'source_name': 'fixture.mp4'},
@@ -47,6 +47,8 @@ def test_analytics_uses_unique_tracks_and_real_events(analytics_snapshot):
     assert result['normal_vs_reversal']['reversal']['count'] == 2
     assert result['normal_vs_reversal']['normal']['upstream_crossing_rate'] == 50.
     assert len(result['scatter']) == 4
+    assert [event['id'] for event in result['events']] == [5, 4, 3, 2, 1]
+    assert result['events'][0]['media_timestamp'] == 42
     assert all('Fish #' not in finding or 'reversal behavior' in finding for finding in result['findings'])
 
 
@@ -58,6 +60,7 @@ def test_analytics_range_filters_every_section(analytics_snapshot):
     assert sum(item['fish_observed'] for item in result['activity']) == 1
     assert sum(item['reversals'] for item in result['behavior_events']) == 1
     assert [item['id'] for item in result['tracks']] == [4]
+    assert [event['id'] for event in result['events']] == [5]
 
 
 def test_analytics_empty_states_are_finite_and_invalid_ranges_fail(analytics_snapshot):

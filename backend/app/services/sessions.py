@@ -90,7 +90,7 @@ class Session:
     async def run(self):
         next_detection = 0.
         while self.running:
-            if self.processor.playback_paused:
+            if self.processor.analysis_paused:
                 await asyncio.sleep(.04)
                 continue
             now = time.monotonic()
@@ -137,11 +137,30 @@ class Session:
         self.version += 1
         return position
 
+    async def replay_event(self, event_id: int):
+        with self.processor.analytics_lock:
+            event = next((item for item in self.processor.engine.analytics_snapshot()['events'] if int(item['id']) == event_id), None)
+        if event is None:
+            raise ValueError('This event is no longer available.')
+        media_timestamp = event.get('media_timestamp')
+        await asyncio.to_thread(self.processor.replay_window, event['timestamp'] if media_timestamp is None else media_timestamp)
+        if not self.running and not self.calibration_required:
+            await self.start()
+        self.version += 1
+        return event
+
+    async def stop_replay(self):
+        await asyncio.to_thread(self.processor.stop_replay)
+        self.version += 1
+
     def snapshot(self, lightweight: bool = True) -> dict:
         self.last_access = time.monotonic()
         p = self.processor
         with p.analytics_lock:
             analytics = p.engine.snapshot()
+        replay_tracks = p.replay_tracks
+        if replay_tracks is not None:
+            analytics['tracks'] = replay_tracks
         if lightweight:
             for track in analytics['tracks']:
                 history = track['trajectory']
@@ -167,6 +186,10 @@ class Session:
         else:
             source_origin = source_name
         reader = p.reader
+        buffer_start, buffer_end = p.playback_bounds
+        playback_start, playback_end = p.timeline_bounds
+        playback_position = p.playback_position
+        at_live_edge = p.at_live_edge
         passage_calibrated = self.calibration.entry_zone is not None and self.calibration.exit_zone is not None
         state = {
             'id': self.id, 'mode': p.mode, 'label': label,
@@ -183,7 +206,12 @@ class Session:
             'display_fps': round(p.current_display_fps, 1),
             'stream_active': self.source_type == 'live' and p.display_is_fresh and not p.reconnecting and not p.stream_error and not p.source_ended,
             'seekable': p.seekable, 'playback_paused': p.playback_paused,
-            'playback_position': round(p.latest_timestamp, 3), 'analysis_generation': p.analysis_generation,
+            'playback_position': round(playback_position, 3),
+            'playback_start': round(playback_start, 3), 'playback_end': round(playback_end, 3),
+            'at_live_edge': at_live_edge,
+            'live_buffer_seconds': round(buffer_end - buffer_start, 3) if reader and reader.is_live else 0.,
+            'replaying': p.replaying,
+            'analysis_generation': p.analysis_generation,
         }
         return {'session': state, 'frame': p.frame, 'timestamp': p.timestamp, 'processing_fps': round(self.processing_fps, 1), **analytics, 'simulation_fish': p.simulation_fish}
 

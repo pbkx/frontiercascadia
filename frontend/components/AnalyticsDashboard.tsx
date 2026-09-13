@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Download, Minus, X } from "lucide-react";
-import { backendUrl } from "@/lib/api";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Download, Minus, Play, X } from "lucide-react";
+import { backendUrl, formatTime } from "@/lib/api";
+import type { PassageEvent } from "@/lib/types";
 
 type Range = "5m" | "15m" | "1h" | "all" | "full";
 type SeriesKey = "fish_observed" | "upstream_crossings" | "downstream_crossings";
 type SortKey = "id" | "direction" | "observed_time" | "relative_speed" | "reversals";
-type View = "activity" | "direction" | "events" | "observed" | "speed" | "comparison" | "scatter" | "tracks";
+type View = "activity" | "direction" | "events" | "observed" | "speed" | "comparison" | "scatter" | "tracks" | "event_log";
 interface Bucket { start: number; end: number; fish_observed?: number; upstream_crossings?: number; downstream_crossings?: number; reversals?: number; long_dwell?: number }
 interface Distribution { label: string; min: number; max: number | null; count: number }
 interface TrackRow { id: number; display_id?: number; direction: "upstream" | "downstream" | "uncertain"; observed_time: number; relative_speed: number; distance: number; reversals: number; crossed: boolean; first_seen: number }
@@ -21,7 +22,7 @@ interface AnalyticsData {
   observed_time_distribution: Distribution[]; observed_time_stats: { median: number | null; p90: number | null; longest: number | null };
   speed_distribution: Distribution[]; speed_stats: { median: number | null; p90: number | null };
   normal_vs_reversal: { normal: Group; reversal: Group };
-  scatter: { id: number; display_id?: number; speed: number; observed_time: number; reversal: boolean }[]; tracks: TrackRow[];
+  scatter: { id: number; display_id?: number; speed: number; observed_time: number; reversal: boolean }[]; tracks: TrackRow[]; events: PassageEvent[];
 }
 
 const SERIES: { key: SeriesKey; label: string; color: string }[] = [
@@ -35,7 +36,13 @@ const VIEWS: { key: View; label: string }[] = [
   { key: "events", label: "Behavior events" }, { key: "observed", label: "Time observed" },
   { key: "speed", label: "Speed" }, { key: "comparison", label: "Track comparison" },
   { key: "scatter", label: "Speed vs time" }, { key: "tracks", label: "Tracks" },
+  { key: "event_log", label: "Events" },
 ];
+
+const EVENT_LABELS: Record<string, string> = {
+  REVERSAL: "Reversal", UPSTREAM_CROSSING: "Upstream crossing", DOWNSTREAM_CROSSING: "Downstream crossing",
+  LONG_DWELL: "Long dwell", REPEATED_APPROACH: "Repeated approach", CONGESTION: "Congestion",
+};
 
 function duration(seconds: number | null, compact = false) {
   if (seconds === null) return "—";
@@ -88,7 +95,7 @@ function Scatter({ points }: { points: AnalyticsData["scatter"] }) {
   </svg>;
 }
 
-export default function AnalyticsDashboard({ sessionId, onClose }: { sessionId: string | null; onClose: () => void }) {
+export default function AnalyticsDashboard({ sessionId, onClose, onReplayEvent }: { sessionId: string | null; onClose: () => void; onReplayEvent: (event: PassageEvent) => void }) {
   const [selectedRange, setSelectedRange] = useState<Range>("all");
   const [activeView, setActiveView] = useState<View>("activity");
   const [data, setData] = useState<AnalyticsData | null>(null);
@@ -117,21 +124,41 @@ export default function AnalyticsDashboard({ sessionId, onClose }: { sessionId: 
     return descending ? -comparison : comparison;
   }), [data?.tracks, descending, sort]);
   const changeSort = (key: SortKey) => { if (sort === key) setDescending(value => !value); else { setSort(key); setDescending(true); } };
+  const downloadCsv = (filename: string, rows: (string | number | boolean)[][]) => {
+    const blob = new Blob([rows.map(row => row.map(csvCell).join(",")).join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
   const exportTracks = () => {
     if (!sortedTracks.length) return;
     const rows = [
       ["Track", "Direction", "Observed seconds", "Relative speed", "Distance", "Reversals", "Crossed", "First seen seconds"],
       ...sortedTracks.map(track => [track.display_id ?? track.id, track.direction, track.observed_time, track.relative_speed, track.distance, track.reversals, track.crossed, track.first_seen]),
     ];
-    const blob = new Blob([rows.map(row => row.map(csvCell).join(",")).join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `fyolo-tracks-${selectedRange}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    downloadCsv(`fyolo-tracks-${selectedRange}.csv`, rows);
+  };
+  const exportEvents = () => {
+    if (!data?.events.length) return;
+    const rows = [
+      ["Timestamp seconds", "Event", "Track", "Internal track ID", "Observation timestamp seconds", "X", "Y", "Message"],
+      ...data.events.map(event => [
+        event.media_timestamp ?? event.timestamp,
+        EVENT_LABELS[event.type] ?? event.type.replaceAll("_", " ").toLowerCase(),
+        event.display_track_id ?? event.track_id,
+        event.track_id,
+        event.timestamp,
+        event.position[0],
+        event.position[1],
+        event.message,
+      ]),
+    ];
+    downloadCsv(`fyolo-events-${selectedRange}.csv`, rows);
   };
   const ranges: { value: Range; label: string }[] = [{ value: "5m", label: "5 MIN" }, { value: "15m", label: "15 MIN" }, { value: "1h", label: "1 HR" }, { value: data?.source_type === "upload" ? "full" : "all", label: data?.source_type === "upload" ? "FULL VIDEO" : "ALL" }];
 
@@ -146,6 +173,7 @@ export default function AnalyticsDashboard({ sessionId, onClose }: { sessionId: 
       ["Median observed", duration(data.normal_vs_reversal.normal.median_observed_time, true), duration(data.normal_vs_reversal.reversal.median_observed_time, true)], ["Median speed", number(data.normal_vs_reversal.normal.median_relative_speed, 3), number(data.normal_vs_reversal.reversal.median_relative_speed, 3)], ["Median distance", number(data.normal_vs_reversal.normal.median_distance, 3), number(data.normal_vs_reversal.reversal.median_distance, 3)], ["Upstream crossing", data.normal_vs_reversal.normal.upstream_crossing_rate === null ? "—" : `${data.normal_vs_reversal.normal.upstream_crossing_rate}%`, data.normal_vs_reversal.reversal.upstream_crossing_rate === null ? "—" : `${data.normal_vs_reversal.reversal.upstream_crossing_rate}%`],
     ].map(row => <div role="row" key={row[0]}><span>{row[0]}</span><b>{row[1]}</b><b>{row[2]}</b></div>)}</div>}</>;
     if (activeView === "scatter") return <><div className="workspace-heading"><div><h3>Speed vs Time Observed</h3><p>Each point represents one tracked fish</p></div><div className="scatter-legend"><span><i className="normal-point" />Normal</span><span><i className="reversal-point" />Reversal</span></div></div><Scatter points={data.scatter} /></>;
+    if (activeView === "event_log") return <><div className="workspace-heading"><div><h3>Events</h3><p>Detected behavior moments in the selected observation period</p></div><button className="export-csv" onClick={exportEvents} disabled={!data.events.length}><Download size={13} />Export CSV</button></div>{data.events.length ? <div className="table-scroll event-table-scroll"><table className="event-table"><thead><tr><th>Timestamp</th><th>Event</th><th>Fish</th><th><span className="sr-only">Action</span></th></tr></thead><tbody>{data.events.map(event => <tr key={event.id} tabIndex={0} onClick={() => onReplayEvent(event)} onKeyDown={keyEvent => { if (keyEvent.key === "Enter" || keyEvent.key === " ") { keyEvent.preventDefault(); onReplayEvent(event); } }}><td>{formatTime(event.media_timestamp ?? event.timestamp)}</td><td><span className={`event-type event-${event.type.toLowerCase()}`}>{EVENT_LABELS[event.type] ?? event.type.replaceAll("_", " ").toLowerCase()}</span></td><td>#{event.display_track_id ?? event.track_id}</td><td><button className="event-replay" onClick={clickEvent => { clickEvent.stopPropagation(); onReplayEvent(event); }}><Play size={12} />Replay</button></td></tr>)}</tbody></table></div> : <Empty text="No behavior events detected in this period." />}</>;
     return <><div className="workspace-heading"><div><h3>Tracks</h3><p>Unique individuals in the selected observation period</p></div><button className="export-csv" onClick={exportTracks} disabled={!sortedTracks.length}><Download size={13} />Export CSV</button></div>{sortedTracks.length ? <div className="table-scroll"><table><thead><tr>{[["Track", "id"], ["Direction", "direction"], ["Observed", "observed_time"], ["Speed", "relative_speed"], ["Distance", null], ["Reversals", "reversals"], ["Crossed", null]].map(([label, key]) => <th key={label}>{key ? <button onClick={() => changeSort(key as SortKey)}>{label}{sort === key ? descending ? <ChevronDown size={13} /> : <ChevronUp size={13} /> : null}</button> : label}</th>)}</tr></thead><tbody>{sortedTracks.map(track => <tr key={track.id}><td>#{track.display_id ?? track.id}</td><td><span className={`direction-label ${track.direction}`}>{track.direction === "upstream" ? <ArrowUp size={13} /> : track.direction === "downstream" ? <ArrowDown size={13} /> : <Minus size={13} />}{track.direction}</span></td><td>{duration(track.observed_time, true)}</td><td>{track.relative_speed.toFixed(3)}</td><td>{track.distance.toFixed(3)}</td><td>{track.reversals}</td><td>{track.crossed ? "Yes" : "No"}</td></tr>)}</tbody></table></div> : <Empty text="No tracks were observed in this period." />}</>;
   };
 
@@ -160,7 +188,7 @@ export default function AnalyticsDashboard({ sessionId, onClose }: { sessionId: 
           ].map(([label, value]) => <div className="summary-card" key={label}><span>{label}</span><strong>{value}</strong></div>)}</section>
           <nav className="analytics-view-switch" aria-label="Analytics views">{VIEWS.map(item => <button key={item.key} aria-pressed={activeView === item.key} className={activeView === item.key ? "active" : ""} onClick={() => setActiveView(item.key)}>{item.label}</button>)}</nav>
           <div className="analytics-dashboard-grid">
-            <section className={`analytics-workspace${activeView === "tracks" ? " tracks-workspace" : ""}`} aria-live="polite">{renderView()}</section>
+            <section className={`analytics-workspace${activeView === "tracks" || activeView === "event_log" ? " tracks-workspace" : ""}`} aria-live="polite">{renderView()}</section>
             <aside className="findings-card"><h3>Key findings</h3>{data.findings.length ? <ul>{data.findings.map(finding => <li key={finding}>{finding}</li>)}</ul> : <Empty text="Collecting enough track data for supported findings…" />}</aside>
           </div>
         </>}

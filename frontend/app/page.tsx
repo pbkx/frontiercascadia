@@ -11,6 +11,7 @@ import { api, backendUrl, formatTime } from "@/lib/api";
 import {
   DEFAULT_GATE, EMPTY_SUMMARY, type Gate, type Point, type Snapshot,
   type Track, type TrackFilter, type ViewMode,
+  type PassageEvent,
 } from "@/lib/types";
 
 const FILTERS: TrackFilter[] = ["All", "Upstream", "Downstream", "Reversals", "Long dwell", "Selected"];
@@ -78,13 +79,19 @@ export default function Fyolo() {
     currentSession.current = next.session.id;
     window.localStorage.setItem("salmonsight-session", next.session.id);
     lastTimestamp.current = next.timestamp;
+    const liveReplay = next.session.source_type === "live" && next.session.replaying;
+    if (liveReplay) histories.current.clear();
     for (const track of next.tracks || []) {
-      const previous = histories.current.get(track.id);
-      const incoming = track.trajectory || [];
-      const trajectory = previous && incoming.length
-        ? [...previous.trajectory.filter(point => point[2] < incoming[0][2]), ...incoming].slice(-600)
-        : incoming.length ? incoming : previous?.trajectory || [];
-      histories.current.set(track.id, { ...track, trajectory });
+      if (liveReplay) {
+        histories.current.set(track.id, track);
+      } else {
+        const previous = histories.current.get(track.id);
+        const incoming = track.trajectory || [];
+        const trajectory = previous && incoming.length
+          ? [...previous.trajectory.filter(point => point[2] < incoming[0][2]), ...incoming].slice(-600)
+          : incoming.length ? incoming : previous?.trajectory || [];
+        histories.current.set(track.id, { ...track, trajectory });
+      }
     }
     if (histories.current.size > 500) {
       for (const [id, track] of histories.current) {
@@ -282,6 +289,32 @@ export default function Fyolo() {
     } finally { setPlaybackBusy(false); }
   };
 
+  const replayEvent = async (event: PassageEvent) => {
+    if (!session?.id) return;
+    setPlaybackBusy(true); setError(null);
+    setAnalyticsOpen(false);
+    setMode("trajectories"); setFilter("Selected"); setSelected(event.track_id);
+    try {
+      const next = await api<Snapshot>(`/api/sessions/${session.id}/events/${event.id}/replay`, { method: "POST" });
+      acceptPacket(next);
+      setSelected(event.track_id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "This event could not be replayed.");
+    } finally { setPlaybackBusy(false); }
+  };
+
+  const closeReplay = async () => {
+    if (!session?.id) return;
+    setPlaybackBusy(true); setError(null);
+    try {
+      const next = await api<Snapshot>(`/api/sessions/${session.id}/playback/replay/close`, { method: "POST" });
+      acceptPacket(next);
+      setSelected(null); setFilter("All"); setMode("live");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Replay could not be closed.");
+    } finally { setPlaybackBusy(false); }
+  };
+
   useEffect(() => {
     if (!scrubbing || !session?.seekable) return;
     const id = session.id;
@@ -303,11 +336,14 @@ export default function Fyolo() {
   }, [acceptPacket, scrubbing, seekValue, session?.id, session?.seekable]);
 
   const videoUrl = session?.video_url ? `${session.video_url.startsWith("http") ? "" : backendUrl()}${session.video_url}` : null;
-  const isActivelyLive = session?.source_type === "live" && session.stream_active;
-  const liveState = session?.source_type === "live"
+  const isActivelyLive = session?.source_type === "live" && session.stream_active && !session.replaying;
+  const liveState = session?.source_type === "live" && !session.replaying
     ? isActivelyLive ? "LIVE" : session.reconnecting ? "RECONNECTING" : "OFFLINE"
     : null;
-  const hasPlayback = Boolean(session?.seekable && session.duration && !session.calibration_required);
+  const playbackStart = session?.playback_start ?? 0;
+  const playbackEnd = session?.playback_end ?? session?.duration ?? 0;
+  const isLiveReplay = Boolean(session?.source_type === "live" && session.replaying);
+  const hasPlayback = Boolean(session?.seekable && playbackEnd > playbackStart && !session.calibration_required && (session.source_type !== "live" || isLiveReplay));
   const changeMode = (nextMode: ViewMode) => {
     setSelected(null);
     setMode(nextMode);
@@ -366,16 +402,17 @@ export default function Fyolo() {
       <dl><div><dt>Direction</dt><dd>{selectedTrack.direction}</dd></div><div><dt>Dwell time</dt><dd>{selectedTrack.dwell_time.toFixed(1)}s</dd></div><div><dt>Reversals</dt><dd>{selectedTrack.reversals}</dd></div><div><dt>Observed</dt><dd>{selectedTrack.time_observed.toFixed(1)}s</dd></div></dl>
     </aside>}
 
-    {hasPlayback && session?.duration && <div className="playback-controls" aria-label="Video playback controls">
+    {hasPlayback && session && <div className={`playback-controls${session.replaying ? " replaying" : ""}`} aria-label={session.replaying ? "Event replay controls" : "Video playback controls"}>
       <button onClick={() => void togglePlayback()} disabled={playbackBusy} aria-label={session.playback_paused ? "Play video" : "Pause video"}>
         {playbackBusy ? <LoaderCircle className="spin" size={15} /> : session.playback_paused ? <Play size={15} /> : <Pause size={15} />}
       </button>
-      <span>{formatTime(seekValue)} / {formatTime(session.duration)}</span>
+      <span>{session.replaying ? `${formatTime(Math.max(0, seekValue - playbackStart))} / ${formatTime(playbackEnd - playbackStart)}` : `${formatTime(seekValue)} / ${formatTime(playbackEnd)}`}</span>
       <input
-        type="range" min={0} max={session.duration} step={Math.max(.04, 1 / (session.display_fps || 25))}
-        value={Math.min(seekValue, session.duration)} aria-label="Video position"
+        type="range" min={playbackStart} max={playbackEnd} step={Math.max(.04, 1 / (session.display_fps || 25))}
+        value={Math.min(Math.max(seekValue, playbackStart), playbackEnd)} aria-label="Video position"
         onChange={event => { setSeekValue(Number(event.target.value)); setScrubbing(true); }}
       />
+      {session.replaying && <button className="replay-close" onClick={() => void closeReplay()} disabled={playbackBusy} aria-label="Close event replay"><X size={15} /></button>}
     </div>}
 
     <div className="bottom-ui">
@@ -417,7 +454,7 @@ export default function Fyolo() {
       </section>
     </div>}
 
-    {analyticsOpen && <AnalyticsDashboard sessionId={session?.id || currentSession.current} onClose={() => setAnalyticsOpen(false)} />}
+    {analyticsOpen && <AnalyticsDashboard sessionId={session?.id || currentSession.current} onClose={() => setAnalyticsOpen(false)} onReplayEvent={event => void replayEvent(event)} />}
 
     <input ref={fileInput} className="file-input" type="file" accept="video/mp4,video/quicktime,video/x-msvideo,.mp4,.mov,.avi" onChange={event => { const file = event.target.files?.[0]; if (file) void upload(file); }} />
   </main>;

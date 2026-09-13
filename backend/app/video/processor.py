@@ -30,6 +30,10 @@ class VideoProcessor:
         self.warning = None
         self.mode = 'VISUALIZATION_DEMO' if video is None else 'LIVE_INFERENCE'
         self.sample_fps = max(1., min(30., settings.inference_sample_fps))
+        if self.mode == 'VISUALIZATION_DEMO':
+            # Keep the developer-only fixture deterministic regardless of the
+            # hardware-tuned inference cadence used for real sources.
+            self.sample_fps = 10.
         if self.reader:
             self.sample_fps = min(self.sample_fps, self.reader.fps)
         if cache:
@@ -68,6 +72,17 @@ class VideoProcessor:
         self.reader_thread: Thread | None = None
         self.stop_reader_event = Event()
         self.playback_paused = False
+        self._live_buffer = deque()
+        self._live_buffer_bytes = 0
+        self._live_overlay_buffer = deque()
+        self._replay_frames = []
+        self._replay_overlays = []
+        self._live_playback_position = None
+        self._live_playback_anchor = 0.
+        self._live_playback_started = 0.
+        self._replay_start = None
+        self._replay_end = None
+        self._reviewing = False
         self._seek_request = None
         self._analytics_reset_pending = False
         self.analysis_generation = 0
@@ -85,7 +100,92 @@ class VideoProcessor:
 
     @property
     def seekable(self):
-        return bool(self.reader and not self.reader.is_live and not self.cache and self.reader.duration)
+        if not self.reader or self.cache:
+            return False
+        if self.reader.is_live:
+            with self.frame_lock:
+                return len(self._live_buffer) > 1
+        return bool(self.reader.duration)
+
+    @property
+    def analysis_paused(self):
+        return bool(self.reader and not self.reader.is_live and (self.playback_paused or self._reviewing))
+
+    @property
+    def playback_bounds(self):
+        if not self.reader:
+            return 0., 0.
+        if not self.reader.is_live:
+            return 0., float(self.reader.duration or 0.)
+        with self.frame_lock:
+            if not self._live_buffer:
+                return 0., 0.
+            return float(self._live_buffer[0][0]), float(self._live_buffer[-1][0])
+
+    @property
+    def replaying(self):
+        return self._replay_start is not None and self._replay_end is not None
+
+    @property
+    def timeline_bounds(self):
+        if self.replaying:
+            return float(self._replay_start), float(self._replay_end)
+        return self.playback_bounds
+
+    def _playback_position(self):
+        start, end = self.playback_bounds
+        if not self.reader or not self.reader.is_live:
+            return min(max(start, self.latest_timestamp), end)
+        with self.playback_lock:
+            if self._live_playback_position is None:
+                return end
+            position = self._live_playback_position
+            if not self.playback_paused:
+                position = self._live_playback_anchor + time.monotonic() - self._live_playback_started
+            if self.replaying:
+                clip_start, clip_end = self._replay_start, self._replay_end
+                if position >= clip_end:
+                    duration = max(.001, clip_end - clip_start)
+                    position = clip_start + (position - clip_start) % duration
+                    self._live_playback_position = position
+                    self._live_playback_anchor = position
+                    self._live_playback_started = time.monotonic()
+                return min(max(clip_start, position), clip_end)
+            return min(max(start, position), end)
+
+    @property
+    def playback_position(self):
+        return self._playback_position()
+
+    @property
+    def at_live_edge(self):
+        if not self.reader or not self.reader.is_live:
+            return False
+        _, end = self.playback_bounds
+        with self.playback_lock:
+            return self._live_playback_position is None or (self._replay_end is None and not self.playback_paused and self._playback_position() >= end - .25)
+
+    @property
+    def display_jpeg(self):
+        if not self.reader or not self.reader.is_live:
+            return self.jpeg
+        position = self._playback_position()
+        with self.frame_lock:
+            frames = self._replay_frames if self.replaying and self._replay_frames else self._live_buffer
+            if not frames:
+                return self.jpeg
+            return min(frames, key=lambda item: abs(item[0] - position))[1]
+
+    @property
+    def replay_tracks(self):
+        if not self.reader or not self.reader.is_live or not self.replaying:
+            return None
+        position = self._playback_position()
+        with self.frame_lock:
+            overlays = self._replay_overlays if self._replay_overlays else self._live_overlay_buffer
+            if not overlays:
+                return []
+            return min(overlays, key=lambda item: abs(item[0] - position))[1]
 
     @property
     def display_is_fresh(self):
@@ -122,11 +222,31 @@ class VideoProcessor:
             self.latest_frame_id = frame_id
             self.latest_timestamp = timestamp
             self.jpeg = jpeg
+            if self.reader and self.reader.is_live:
+                self._live_buffer.append((timestamp, jpeg))
+                if self.replaying and self._replay_start <= timestamp <= self._replay_end:
+                    self._replay_frames.append((timestamp, jpeg))
+                self._live_buffer_bytes += len(jpeg)
+                max_age = max(6., float(settings.live_buffer_seconds))
+                max_bytes = max(16 * 1024 * 1024, int(settings.live_buffer_max_megabytes * 1024 * 1024))
+                while len(self._live_buffer) > 1 and (timestamp - self._live_buffer[0][0] > max_age or self._live_buffer_bytes > max_bytes):
+                    self._live_buffer_bytes -= len(self._live_buffer.popleft()[1])
             self.last_frame_at = now
             self._display_times.append(now)
             if len(self._display_times) > 1:
                 elapsed = self._display_times[-1] - self._display_times[0]
                 self.display_fps = (len(self._display_times) - 1) / elapsed if elapsed > 0 else 0.
+
+    def _store_live_overlay(self, timestamp: float, tracks: list[dict]):
+        if not self.reader or not self.reader.is_live:
+            return
+        with self.frame_lock:
+            self._live_overlay_buffer.append((timestamp, tracks))
+            if self.replaying and self._replay_start <= timestamp <= self._replay_end:
+                self._replay_overlays.append((timestamp, tracks))
+            max_age = max(6., float(settings.live_buffer_seconds))
+            while len(self._live_overlay_buffer) > 1 and timestamp - self._live_overlay_buffer[0][0] > max_age:
+                self._live_overlay_buffer.popleft()
 
     def start_reader(self):
         if not self.reader or self.cache or self.mode == 'VISUALIZATION_DEMO':
@@ -140,13 +260,40 @@ class VideoProcessor:
 
     def set_playback_paused(self, paused: bool):
         if not self.seekable:
-            raise ValueError('Playback controls are available only for recorded video.')
+            raise ValueError('Playback controls are not available yet.')
+        if self.reader.is_live:
+            position = self._playback_position()
+            _, end = self.playback_bounds
+            with self.playback_lock:
+                self.playback_paused = bool(paused)
+                if paused:
+                    self._live_playback_position = position
+                elif not self.replaying and position >= end - .25:
+                    self._live_playback_position = None
+                else:
+                    self._live_playback_position = position
+                    self._live_playback_anchor = position
+                    self._live_playback_started = time.monotonic()
+            return
         with self.playback_lock:
+            if not self.replaying:
+                self._reviewing = False
             self.playback_paused = bool(paused)
 
     def seek(self, seconds: float):
         if not self.seekable:
             raise ValueError('This video does not provide a seekable timeline.')
+        if self.reader.is_live:
+            start, end = self.timeline_bounds
+            target = min(max(start, float(seconds)), end)
+            with self.playback_lock:
+                if not self.replaying and target >= end - .25 and not self.playback_paused:
+                    self._live_playback_position = None
+                else:
+                    self._live_playback_position = target
+                    self._live_playback_anchor = target
+                    self._live_playback_started = time.monotonic()
+            return target
         duration = float(self.reader.duration)
         seconds = min(max(0., float(seconds)), max(0., duration - 1 / self.reader.fps))
         target = max(0, round(seconds * self.reader.fps))
@@ -154,6 +301,9 @@ class VideoProcessor:
         result = {}
         with self.playback_lock:
             was_paused = self.playback_paused
+            is_replay_seek = self.replaying
+            if not is_replay_seek:
+                self._reviewing = False
             # Freeze display advancement and inference while the reader moves.
             # This prevents the playback loop from racing past a remote seek.
             self.playback_paused = True
@@ -163,7 +313,8 @@ class VideoProcessor:
             self._seek_request = (target, done, result)
             self.source_ended = False
             self.completed = False
-            self._analytics_reset_pending = abs(target - self.latest_frame_id) > 1
+            if not is_replay_seek:
+                self._analytics_reset_pending = abs(target - self.latest_frame_id) > 1
         try:
             self.start_reader()
             if not done.wait(1) and (not self.reader_thread or not self.reader_thread.is_alive()):
@@ -179,6 +330,61 @@ class VideoProcessor:
         finally:
             with self.playback_lock:
                 self.playback_paused = was_paused
+
+    def replay_window(self, timestamp: float, before: float = 3., after: float = 3.):
+        if not self.seekable:
+            raise ValueError('This source does not provide a replayable timeline.')
+        event_time = float(timestamp)
+        start_bound, end_bound = self.playback_bounds
+        if self.reader.is_live and not start_bound <= event_time <= end_bound + .5:
+            raise ValueError('This event is outside the available live replay buffer.')
+        start = max(start_bound, event_time - max(0., before))
+        recorded_end = max(0., float(self.reader.duration or 0.) - 1 / self.reader.fps)
+        end = min(recorded_end, event_time + max(0., after)) if not self.reader.is_live else event_time + max(0., after)
+        if self.reader.is_live:
+            with self.frame_lock:
+                replay_frames = [item for item in self._live_buffer if start <= item[0] <= end]
+                replay_overlays = [item for item in self._live_overlay_buffer if start <= item[0] <= end]
+            with self.playback_lock:
+                self._replay_start = start
+                self._replay_end = end
+                self._replay_frames = replay_frames
+                self._replay_overlays = replay_overlays
+                self._live_playback_position = start
+                self._live_playback_anchor = start
+                self._live_playback_started = time.monotonic()
+                self.playback_paused = False
+            return start, end
+        with self.playback_lock:
+            self._replay_start = start
+            self._replay_end = end
+            self._reviewing = True
+        try:
+            self.seek(start)
+        except ValueError:
+            with self.playback_lock:
+                self._replay_start = None
+                self._replay_end = None
+                self._reviewing = False
+            raise
+        with self.playback_lock:
+            self.playback_paused = False
+        return start, end
+
+    def stop_replay(self):
+        with self.playback_lock:
+            if not self.replaying:
+                return
+            self._replay_start = None
+            self._replay_end = None
+            self._reviewing = False
+            self._replay_frames = []
+            self._replay_overlays = []
+            if self.reader and self.reader.is_live:
+                self._live_playback_position = None
+                self.playback_paused = False
+            else:
+                self.playback_paused = True
 
     def _reset_analytics(self):
         """Start a disconnected tracking segment without discarding observations."""
@@ -220,7 +426,7 @@ class VideoProcessor:
             with self.playback_lock:
                 seek_request = self._seek_request
                 self._seek_request = None
-                paused = self.playback_paused
+                paused = self.playback_paused and not self.reader.is_live
             if seek_request is not None:
                 target, done, result = seek_request
                 frame = self.reader.read(target)
@@ -252,6 +458,15 @@ class VideoProcessor:
                 timestamp = time.monotonic() - started if self.reader.is_live else frame_id / self.reader.fps
                 self._publish_frame(frame, frame_id, timestamp)
                 frame_id += 1
+                if not self.reader.is_live:
+                    with self.playback_lock:
+                        if self.replaying and timestamp >= self._replay_end:
+                            target = max(0, round(self._replay_start * self.reader.fps))
+                            replay_frame = self.reader.read(target)
+                            if replay_frame is not None:
+                                frame_id = target + 1
+                                started = time.monotonic() - frame_id / self.reader.fps
+                                self._publish_frame(replay_frame, target, target / self.reader.fps)
                 continue
             if not self.reader.is_live:
                 self.source_ended = True
@@ -283,7 +498,7 @@ class VideoProcessor:
         """Return True after inference, None while waiting, or False at terminal state."""
         if self.completed or self.detector_error or (self.stream_error and not self.reconnecting):
             return False
-        if self.playback_paused:
+        if self.analysis_paused:
             return None
         if self._analytics_reset_pending:
             self._reset_analytics()
@@ -303,7 +518,7 @@ class VideoProcessor:
         except DetectorUnavailable as exc:
             self.detector_error = str(exc)
             return False
-        if self.playback_paused:
+        if self.analysis_paused:
             return None
         with self.analytics_lock:
             # Analysis time measures footage actually observed. Seeking does not
@@ -313,9 +528,15 @@ class VideoProcessor:
             analysis_timestamp = self.timestamp + elapsed
             tracked = self.tracker.update(detections, analysis_timestamp)
             namespaced = self._tracked_observations(tracked, self._track_id_namespace)
-            self.engine.update(namespaced, analysis_timestamp)
+            self.engine.update(namespaced, analysis_timestamp, media_timestamp)
+            overlay_tracks = [track.serialize(True) for track in self.engine.tracks.values()]
+            overlay_tracks += [
+                track.serialize(False) for track in self.engine.archived.values()
+                if analysis_timestamp - track.last_seen <= 2.
+            ]
             self.frame, self.timestamp = frame_id, analysis_timestamp
             self._last_analysis_media_timestamp = media_timestamp
+        self._store_live_overlay(media_timestamp, overlay_tracks)
         self.processed_frame_id = frame_id
         self.index += 1
         self._detection_times.append(time.monotonic())
@@ -371,7 +592,7 @@ class VideoProcessor:
         if self.completed:
             return
         self.completed = True
-        if self.seekable:
+        if self.seekable and self.reader and not self.reader.is_live:
             self.playback_paused = True
         with self.analytics_lock:
             self.engine.finish(self.timestamp)

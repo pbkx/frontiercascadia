@@ -140,6 +140,25 @@ async def seek_playback(session_id: str, body: PlaybackSeek):
     return session.snapshot()
 
 
+@app.post('/api/sessions/{session_id}/events/{event_id}/replay', response_model=Snapshot)
+async def replay_event(session_id: str, event_id: int):
+    session = get_session(session_id)
+    async with session.lock:
+        try:
+            await session.replay_event(event_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+    return session.snapshot()
+
+
+@app.post('/api/sessions/{session_id}/playback/replay/close', response_model=Snapshot)
+async def close_replay(session_id: str):
+    session = get_session(session_id)
+    async with session.lock:
+        await session.stop_replay()
+    return session.snapshot()
+
+
 @app.post('/api/sessions/{session_id}/calibration', response_model=Snapshot)
 async def calibrate(session_id: str, body: Calibration):
     session = get_session(session_id)
@@ -265,7 +284,7 @@ async def video_frames(session_id: str):
         previous = None
         try:
             while session.id in sessions:
-                current = session.processor.jpeg
+                current = session.processor.display_jpeg
                 if current and current is not previous:
                     previous = current
                     yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + current + b'\r\n'
@@ -300,7 +319,7 @@ async def websocket(websocket: WebSocket, session_id: str):
             for track in packet['tracks']:
                 signature = (track['last_seen'], track['active'], track['status'])
                 current_tracks[track['id']] = signature
-                if previous_tracks.get(track['id']) != signature:
+                if packet['session']['replaying'] or previous_tracks.get(track['id']) != signature:
                     changed.append(track)
             previous_tracks = current_tracks
             packet['tracks'] = changed

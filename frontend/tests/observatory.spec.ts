@@ -96,6 +96,7 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
     },
     scatter: [{ id: 184, display_id: 1, speed: .19, observed_time: 8.2, reversal: false }],
     tracks: [{ id: 184, display_id: 1, direction: 'upstream', observed_time: 8.2, relative_speed: .19, distance: .74, reversals: 0, crossed: true, first_seen: 3.8 }],
+    events: [{ id: 9, type: 'REVERSAL', track_id: 184, display_track_id: 1, timestamp: 8, media_timestamp: 4.5, position: [.5, .5], message: 'Reversal detected' }],
   } }));
   await analyticsButton.click();
   await expect(page.getByRole('dialog', { name: 'Analytics' })).toBeVisible();
@@ -112,6 +113,16 @@ test('opens video-first and analyzes a real local video fixture', async ({ page 
   await expect(page.getByRole('button', { name: 'Behavior events', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)');
   await expect(page.getByRole('heading', { name: 'Behavior Events', level: 3 })).toBeVisible();
   await expect(page.getByText(/NaN|undefined|Infinity/)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Events', exact: true }).click();
+  await expect(page.getByText('Reversal', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Replay' })).toBeVisible();
+  const eventExportButton = page.getByRole('button', { name: 'Export CSV' });
+  const [eventDownload] = await Promise.all([page.waitForEvent('download'), eventExportButton.click()]);
+  expect(eventDownload.suggestedFilename()).toBe('fyolo-events-5m.csv');
+  const eventCsv = await (await eventDownload.createReadStream()).toArray();
+  const eventCsvText = Buffer.concat(eventCsv).toString('utf8');
+  expect(eventCsvText).toContain('"Timestamp seconds","Event","Track","Internal track ID","Observation timestamp seconds","X","Y","Message"');
+  expect(eventCsvText).toContain('"4.5","Reversal","1","184","8","0.5","0.5","Reversal detected"');
   await page.getByRole('button', { name: 'Tracks', exact: true }).click();
   const exportButton = page.getByRole('button', { name: 'Export CSV' });
   await expect(exportButton).toBeEnabled();
@@ -160,6 +171,7 @@ test('selection follows the visible tracks and clears when changing modes', asyn
       width: 1440, height: 900, source_type: 'simulated', passage_calibrated: false,
       reconnecting: false, reconnect_attempts: 0, display_fps: 10, stream_active: false,
       seekable: false, playback_paused: false, playback_position: 0, analysis_generation: 0,
+      replaying: false,
       calibration_required: false,
       calibration: { upstream: [1, 0], gate: [[.65, .26], [.65, .74]] },
     },
@@ -180,6 +192,32 @@ test('selection follows the visible tracks and clears when changing modes', asyn
   await page.route('**/api/sessions', async route => {
     await route.fulfill({ json: snapshot });
   });
+  await page.route('**/api/sessions/selection-session/analytics?range=*', route => route.fulfill({ json: {
+    session_id: 'selection-session', source_type: 'simulated', source_name: 'Selection fixture', range: 'all',
+    observation: { start: 0, end: 10, seconds: 10, bucket_seconds: 30 },
+    summary: { fish_tracked: 2, upstream_percent: 50, downstream_percent: 0, reversal_rate: 50, median_observed_time: 3, median_relative_speed: .02 },
+    findings: ['One reversal was detected.'],
+    activity: [{ start: 0, end: 10, fish_observed: 2, upstream_crossings: 0, downstream_crossings: 0 }],
+    behavior_events: [{ start: 0, end: 10, reversals: 1, long_dwell: 0 }],
+    direction: [{ name: 'upstream', count: 1, percent: 50 }, { name: 'downstream', count: 0, percent: 0 }, { name: 'uncertain', count: 1, percent: 50 }],
+    observed_time_distribution: [], observed_time_stats: { median: 3, p90: 3, longest: 3 },
+    speed_distribution: [], speed_stats: { median: .02, p90: .02 },
+    normal_vs_reversal: {
+      normal: { count: 1, median_observed_time: 3, median_relative_speed: .02, median_distance: .1, upstream_crossing_rate: 0 },
+      reversal: { count: 1, median_observed_time: 3, median_relative_speed: .02, median_distance: .1, upstream_crossing_rate: 0 },
+    },
+    scatter: [], tracks: [],
+    events: [{ id: 9, type: 'REVERSAL', track_id: 10_000_794, display_track_id: 1, timestamp: 9, media_timestamp: 9, position: [.15, .15], message: 'Reversal detected' }],
+  } }));
+  let replayRequested = false;
+  await page.route('**/api/sessions/selection-session/events/9/replay', route => {
+    replayRequested = true;
+    return route.fulfill({ json: {
+      ...snapshot,
+      session: { ...snapshot.session, source_type: 'live', seekable: true, playback_paused: false, playback_position: 6, playback_start: 2, playback_end: 8, at_live_edge: false, live_buffer_seconds: 10, replaying: true },
+    } });
+  });
+  await page.route('**/api/sessions/selection-session/playback/replay/close', route => route.fulfill({ json: snapshot }));
   await page.routeWebSocket('**/ws/sessions/**', () => undefined);
   await page.goto('/');
 
@@ -215,5 +253,21 @@ test('selection follows the visible tracks and clears when changing modes', asyn
   await clickNormalized(.15, .15);
   await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toBeVisible();
   await clickNormalized(.5, .5);
+  await expect(page.locator('.track-panel')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Analytics', exact: true }).click();
+  await page.getByRole('button', { name: 'Events', exact: true }).click();
+  await page.getByRole('button', { name: 'Replay' }).click();
+  await expect(page.getByRole('dialog', { name: 'Analytics' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'trajectories', exact: true })).toHaveClass(/active/);
+  await expect(page.getByRole('button', { name: 'Selected', exact: true })).toHaveClass(/active/);
+  await expect(page.getByRole('complementary', { name: 'Fish 1 details' })).toBeVisible();
+  await expect(page.locator('.live-status')).toHaveCount(0);
+  await expect(page.getByLabel('Video position')).toBeVisible();
+  await expect(page.getByText('0:04 / 0:06', { exact: true })).toBeVisible();
+  expect(replayRequested).toBe(true);
+  await page.getByRole('button', { name: 'Close event replay' }).click();
+  await expect(page.getByLabel('Video position')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'live', exact: true })).toHaveClass(/active/);
   await expect(page.locator('.track-panel')).toHaveCount(0);
 });

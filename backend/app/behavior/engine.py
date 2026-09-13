@@ -70,6 +70,7 @@ class BehaviorEngine:
         self._event_id = 0
         self.started_at: float | None = None
         self.timestamp = 0.0
+        self.media_timestamp = 0.0
         self.counts = {'upstream': 0, 'downstream': 0, 'successful': 0, 'attempts': 0, 'reversals': 0, 'long_dwell': 0, 'tracks_produced': 0}
         self.completed_count = 0
         # Rolling measured baseline: no ratio is emitted before three successes.
@@ -84,6 +85,7 @@ class BehaviorEngine:
             'id': self._event_id, 'type': kind, 'track_id': track.id,
             'display_track_id': track.display_id if track.display_id is not None else track.id,
             'timestamp': self.timestamp,
+            'media_timestamp': self.media_timestamp,
             'position': list(position if position is not None else track.point), 'message': message,
         }
         self.events.append(event)
@@ -130,7 +132,8 @@ class BehaviorEngine:
         if track.attempts > 1:
             track.flags.add('MULTIPLE_ATTEMPTS')
             self.heatmaps.attempt(track.point)
-        self._event('PASSAGE_ATTEMPT', track, f'Fish #{track.display_id} approaching passage · attempt {track.attempts}')
+        kind = 'REPEATED_APPROACH' if track.attempts > 1 else 'PASSAGE_ATTEMPT'
+        self._event(kind, track, f'Fish #{track.display_id} approaching passage · attempt {track.attempts}')
 
     def _success(self, track):
         if track.passage_seconds is not None:
@@ -157,7 +160,7 @@ class BehaviorEngine:
         self.completed_count += 1
         self._event('TRACK_ENDED', track, f'Fish #{track.display_id} left observation · {track.status.lower()}')
 
-    def update(self, tracked, timestamp: float):
+    def update(self, tracked, timestamp: float, media_timestamp: float | None = None):
         if not math.isfinite(timestamp):
             raise ValueError('Behavior timestamps must be finite.')
         if self.started_at is not None and timestamp < self.timestamp:
@@ -165,6 +168,7 @@ class BehaviorEngine:
         if self.started_at is None:
             self.started_at = timestamp
         self.timestamp = float(timestamp)
+        self.media_timestamp = float(timestamp if media_timestamp is None else media_timestamp)
         for track_id, track in list(self.tracks.items()):
             if timestamp - track.last_seen > 2.0:
                 self._archive(track_id)

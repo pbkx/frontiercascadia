@@ -197,6 +197,37 @@ def test_recorded_playback_pause_and_seek_freeze_analytics(video, monkeypatch):
     processor.close()
 
 
+def test_recorded_event_replay_loops_until_closed(video, monkeypatch):
+    monkeypatch.setattr('backend.app.video.processor.create_detector', FixtureDetector)
+    processor = VideoProcessor(video)
+
+    start, end = processor.replay_window(1., before=.2, after=.2)
+    assert (start, end) == pytest.approx((.8, 1.2))
+    assert processor.replaying and processor.analysis_paused
+
+    deadline = time.monotonic() + 1.2
+    saw_end = False
+    saw_loop = False
+    previous = processor.playback_position
+    while time.monotonic() < deadline and not saw_loop:
+        current = processor.playback_position
+        saw_end = saw_end or current >= 1.1
+        saw_loop = saw_loop or saw_end and current < previous
+        previous = current
+        time.sleep(.02)
+    assert saw_loop
+    assert processor.replaying and not processor.source_ended
+
+    processor.set_playback_paused(True)
+    time.sleep(.12)  # allow an already-started frame read to settle
+    frozen = processor.playback_position
+    time.sleep(.15)
+    assert processor.playback_position == pytest.approx(frozen)
+    processor.stop_replay()
+    assert not processor.replaying and processor.playback_paused
+    processor.close()
+
+
 def test_live_reader_reconnects_after_a_failed_read(monkeypatch):
     frame = np.full((90, 160, 3), 50, np.uint8)
 
@@ -231,6 +262,70 @@ def test_live_reader_reconnects_after_a_failed_read(monkeypatch):
     assert processor.reconnect_attempts == 1
     assert processor.jpeg.startswith(b'\xff\xd8')
     assert processor.stream_error is None
+    processor.close()
+
+
+def test_live_buffer_can_pause_seek_and_replay_without_pausing_detection(monkeypatch):
+    frame = np.full((90, 160, 3), 30, np.uint8)
+
+    class BufferedLiveReader:
+        fps = 10.
+        total_frames = 0
+        duration = None
+        width = 160
+        height = 90
+        is_live = True
+        def __init__(self, source):
+            pass
+        def read(self, number):
+            return frame.copy()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(settings, 'live_buffer_seconds', 6.)
+    monkeypatch.setattr('backend.app.video.processor.VideoReader', BufferedLiveReader)
+    monkeypatch.setattr('backend.app.video.processor.create_detector', FixtureDetector)
+    processor = VideoProcessor(StreamSource('https://example.com/live.m3u8', 'https://media.example/live.m3u8', 'Test live'))
+    for second in range(1, 11):
+        current = np.full((90, 160, 3), 30 + second, np.uint8)
+        processor._publish_frame(current, second * 10, float(second))
+    start, end = processor.playback_bounds
+    assert start == pytest.approx(4.)
+    assert end == pytest.approx(10.)
+    assert processor.seekable and processor.at_live_edge
+
+    processor.set_playback_paused(True)
+    processor.seek(6.)
+    assert processor.playback_paused
+    assert processor.playback_position == pytest.approx(6.)
+    assert not processor.at_live_edge
+    assert processor.detect_latest() is True
+    processor._store_live_overlay(6., [{'id': 6, 'trajectory': [[.2, .5, 6.]]}])
+    processor._store_live_overlay(9., [{'id': 9, 'trajectory': [[.8, .5, 9.]]}])
+    assert processor.replay_tracks is None
+
+    replay_start, replay_end = processor.replay_window(7.)
+    assert replay_start == pytest.approx(4.)
+    assert replay_end == pytest.approx(10.)
+    assert not processor.playback_paused
+    assert processor.detect_latest() is None  # The newest frame was already analyzed.
+    assert processor.replay_tracks[0]['id'] == 6
+    assert processor.timeline_bounds == pytest.approx((4., 10.))
+    processor.seek(8.)
+    assert processor.replaying
+    assert processor.playback_position == pytest.approx(8.)
+    processor.set_playback_paused(True)
+    assert processor.replaying and processor.playback_paused
+    processor.set_playback_paused(False)
+    processor._live_playback_anchor = 4.
+    processor._live_playback_started = time.monotonic() - 6.1
+    assert processor.playback_position == pytest.approx(4.1, abs=.05)
+    assert not processor.playback_paused
+    assert processor.replaying and not processor.at_live_edge
+    processor.stop_replay()
+    assert not processor.replaying and processor.at_live_edge
+    with pytest.raises(ValueError, match='outside the available'):
+        processor.replay_window(2.)
     processor.close()
 
 
